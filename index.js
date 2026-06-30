@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.5.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.6.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -28,6 +28,7 @@ function settings() {
   if (typeof s.enabled !== 'boolean') s.enabled = true; // 插件总开关
   if (typeof s.cotSeparator !== 'string') s.cotSeparator = '</think>'; // 思维链分隔符
   if (typeof s.historyCount !== 'number') s.historyCount = 4; // 收录最近 N 条 GM 回复
+  if (typeof s.stripTags !== 'string') s.stripTags = ''; // 标签剔除（逗号分隔的标签名）
   return s;
 }
 function toast() {
@@ -100,15 +101,33 @@ function stripCoT(text, sep) {
   const i = text.indexOf(sep);
   return i >= 0 ? text.slice(i + sep.length) : text;
 }
-/** 最近 N 条 GM 回复（剥思维链、不截断）+ 本轮玩家输入（仅最新一条玩家，历史玩家输入不收录） */
+/** 解析标签名列表（逗号/空白分隔，兼容带尖括号/斜杠的写法） */
+function parseTagList(str) {
+  return (str || '')
+    .split(/[,，\s]+/)
+    .map((t) => t.replace(/[<>/]/g, '').trim())
+    .filter(Boolean);
+}
+/** 标签剔除：删除每个 <tag>...</tag> 整段（含内容）；并清掉自闭合 <tag/> 与残留单标签 */
+function stripTagsFromText(text, tags) {
+  let t = text;
+  for (const tag of tags) {
+    const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    t = t.replace(new RegExp(`<${esc}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${esc}>`, 'gi'), ''); // 成对：整段删
+    t = t.replace(new RegExp(`<\\/?${esc}(?:\\s[^>]*)?\\/?>`, 'gi'), ''); // 自闭合 / 残留单标签
+  }
+  return t;
+}
+/** 最近 N 条 GM 回复（剥思维链+标签剔除、不截断）+ 本轮玩家输入（仅最新一条玩家，历史玩家输入不收录） */
 function routerContext() {
   const s = settings();
   const chat = ctx.chat || [];
+  const tags = parseTagList(s.stripTags);
   let current = '';
   if (chat.length && chat[chat.length - 1].is_user) current = chat[chat.length - 1].mes || '';
   const gm = chat.filter((m) => !m.is_user).slice(-Math.max(1, s.historyCount));
   const hist = gm
-    .map((m) => stripCoT(m.mes || '', s.cotSeparator).trim())
+    .map((m) => stripTagsFromText(stripCoT(m.mes || '', s.cotSeparator), tags).trim())
     .filter(Boolean)
     .join('\n\n---\n\n');
   return { hist, current };
@@ -229,6 +248,39 @@ function el(html) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function pickJsonFile() {
+  return new Promise((resolve) => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,application/json';
+    inp.addEventListener('change', () => {
+      const file = inp.files?.[0];
+      if (!file) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          resolve(JSON.parse(reader.result));
+        } catch {
+          resolve(null);
+        }
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsText(file);
+    });
+    inp.click();
+  });
+}
 
 let lastByBook = {};
 function renderFilterList(container, query = '') {
@@ -308,9 +360,13 @@ async function openConfig() {
     <div class="crr-config">
       <div class="crr-head">
         <span>修仙规则路由 · 配置</span>
-        <label class="crr-master" title="关闭后本插件不再路由，所有规则按 ST 原样">
-          <input type="checkbox" class="crr-enabled" /> 启用插件
-        </label>
+        <div class="crr-inline crr-right">
+          <div class="menu_button crr-icon crr-import" title="导入配置"><i class="fa-solid fa-file-import"></i></div>
+          <div class="menu_button crr-icon crr-export" title="导出配置（不含 API Key）"><i class="fa-solid fa-file-export"></i></div>
+          <label class="crr-master" title="关闭后本插件不再路由，所有规则按 ST 原样">
+            <input type="checkbox" class="crr-enabled" /> 启用插件
+          </label>
+        </div>
       </div>
 
       <div class="crr-section">
@@ -347,8 +403,10 @@ async function openConfig() {
           <input type="text" class="crr-cot text_pole" placeholder="&lt;/think&gt;" />
           <label class="crr-lbl">最近 GM 回复条数</label>
           <input type="number" class="crr-histn text_pole" min="1" max="50" />
+          <label class="crr-lbl">标签剔除</label>
+          <input type="text" class="crr-striptags text_pole" placeholder="如 think,StatusPlaceHolderImpl（逗号分隔，可留空）" />
         </div>
-        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。</div>
+        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；标签剔除会把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。</div>
       </div>
 
       <div class="crr-section crr-flex1">
@@ -366,6 +424,7 @@ async function openConfig() {
   const enabledChk = root.querySelector('.crr-enabled');
   const cotIn = root.querySelector('.crr-cot');
   const histIn = root.querySelector('.crr-histn');
+  const tagIn = root.querySelector('.crr-striptags');
   const urlIn = root.querySelector('.crr-url');
   const keyIn = root.querySelector('.crr-key');
   const modelSel = root.querySelector('.crr-model');
@@ -384,6 +443,7 @@ async function openConfig() {
 
   cotIn.value = s.cotSeparator;
   histIn.value = s.historyCount;
+  tagIn.value = s.stripTags;
   cotIn.addEventListener('input', () => {
     s.cotSeparator = cotIn.value;
     persist();
@@ -394,6 +454,10 @@ async function openConfig() {
       s.historyCount = n;
       persist();
     }
+  });
+  tagIn.addEventListener('input', () => {
+    s.stripTags = tagIn.value;
+    persist();
   });
 
   urlIn.value = s.api.url || '';
@@ -425,6 +489,88 @@ async function openConfig() {
     const candidates = await gatherCandidates();
     const { system, user } = buildRouterMessages(candidates, 'Here_is_Participant_input');
     showPreview(system, user, candidates.length);
+  });
+
+  // —— 导出（绝不含 API Key）——
+  root.querySelector('.crr-export').addEventListener('click', async () => {
+    const books = Object.keys(s.filters || {}).filter((b) => Object.keys(s.filters[b] || {}).length);
+    const dlg = el(`
+      <div class="crr-export-dlg">
+        <div class="crr-head">导出配置</div>
+        <label class="crr-exp-row"><input type="checkbox" class="crr-exp-global" checked /> 全局设置（提示词 / 分隔符 / 条数 / 标签剔除 / 接口与模型，<b>不含 API Key</b>）</label>
+        <div class="crr-pv-label">世界书过滤配置（多选）</div>
+        <div class="crr-exp-books"></div>
+      </div>`);
+    const booksWrap = dlg.querySelector('.crr-exp-books');
+    if (books.length) {
+      books.forEach((b) => {
+        const r = el('<label class="crr-exp-row"><input type="checkbox" class="crr-exp-book" checked /> <span></span></label>');
+        r.querySelector('input').dataset.book = b;
+        r.querySelector('span').textContent = `${b}（${Object.keys(s.filters[b]).length} 条）`;
+        booksWrap.append(r);
+      });
+    } else {
+      booksWrap.append(el('<div class="crr-hint">（暂无已配置过滤的世界书）</div>'));
+    }
+    const ok = await ctx.callGenericPopup(dlg, ctx.POPUP_TYPE.CONFIRM, '', { okButton: '导出', cancelButton: '取消' });
+    if (!ok) return;
+    const out = { __crr_export: true, version: '0.6.0' };
+    if (dlg.querySelector('.crr-exp-global').checked) {
+      out.global = {
+        prompt: s.prompt,
+        enabled: s.enabled,
+        cotSeparator: s.cotSeparator,
+        historyCount: s.historyCount,
+        stripTags: s.stripTags,
+        api: { url: s.api.url, model: s.api.model }, // 不含 key
+      };
+    }
+    const selBooks = [...dlg.querySelectorAll('.crr-exp-book')].filter((c) => c.checked).map((c) => c.dataset.book);
+    if (selBooks.length) {
+      out.filters = {};
+      selBooks.forEach((b) => (out.filters[b] = s.filters[b]));
+    }
+    downloadJson(out, 'cultivation-rule-router-config.json');
+    toast().success('已导出配置文件（不含 API Key）', '🧭 规则路由', { timeOut: 3500 });
+  });
+
+  // —— 导入（保留现有 API Key 不被覆盖）——
+  root.querySelector('.crr-import').addEventListener('click', async () => {
+    const data = await pickJsonFile();
+    if (!data || !data.__crr_export) {
+      toast().warning('不是有效的规则路由配置文件', '🧭 规则路由');
+      return;
+    }
+    if (data.global) {
+      const g = data.global;
+      if (typeof g.prompt === 'string') s.prompt = g.prompt;
+      if (typeof g.enabled === 'boolean') s.enabled = g.enabled;
+      if (typeof g.cotSeparator === 'string') s.cotSeparator = g.cotSeparator;
+      if (typeof g.historyCount === 'number') s.historyCount = g.historyCount;
+      if (typeof g.stripTags === 'string') s.stripTags = g.stripTags;
+      if (g.api) {
+        if (typeof g.api.url === 'string') s.api.url = g.api.url;
+        if (typeof g.api.model === 'string') s.api.model = g.api.model;
+      } // 不动 s.api.key
+    }
+    if (data.filters) {
+      for (const [b, f] of Object.entries(data.filters)) s.filters[b] = { ...(s.filters[b] || {}), ...f };
+    }
+    persist();
+    // 刷新界面字段
+    enabledChk.checked = s.enabled;
+    root.classList.toggle('crr-disabled', !s.enabled);
+    cotIn.value = s.cotSeparator;
+    histIn.value = s.historyCount;
+    tagIn.value = s.stripTags;
+    urlIn.value = s.api.url || '';
+    promptIn.value = s.prompt || DEFAULT_PROMPT;
+    if (s.api.model && ![...modelSel.options].some((o) => o.value === s.api.model)) {
+      modelSel.append(el(`<option value="${escapeHtml(s.api.model)}" selected>${escapeHtml(s.api.model)}</option>`));
+    }
+    if (s.api.model) modelSel.value = s.api.model;
+    refreshList(list, search);
+    toast().success('配置已导入', '🧭 规则路由');
   });
 
   root.querySelector('.crr-fetch').addEventListener('click', async () => {
@@ -477,7 +623,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.5.0 已加载 ✓');
+  console.log('[规则路由] v0.6.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {

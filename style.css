@@ -80,6 +80,39 @@
   min-width: 0;
 }
 
+/* 图标按钮（导入/导出） */
+.crr-icon.menu_button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/* 导出对话框 */
+.crr-export-dlg {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crr-exp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.crr-exp-books {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 4px;
+}
+
 /* 按钮：强制横排、自适应宽度、统一高度 */
 .crr-btn.menu_button {
   white-space: nowrap;
