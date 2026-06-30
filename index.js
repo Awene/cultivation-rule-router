@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.4.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.5.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -26,6 +26,8 @@ function settings() {
   s.filters = s.filters || {}; // filters[book][uid] = { enabled, condition, comment }
   if (typeof s.prompt !== 'string') s.prompt = DEFAULT_PROMPT;
   if (typeof s.enabled !== 'boolean') s.enabled = true; // 插件总开关
+  if (typeof s.cotSeparator !== 'string') s.cotSeparator = '</think>'; // 思维链分隔符
+  if (typeof s.historyCount !== 'number') s.historyCount = 4; // 收录最近 N 条 GM 回复
   return s;
 }
 function toast() {
@@ -92,19 +94,23 @@ async function inUseEntriesByBook() {
 }
 
 // ============ flash 路由 ============
-/** 最近剧情（不含本轮新输入）+ 本轮玩家输入（生成时为 chat 最后一条 is_user） */
+/** 剥思维链：分隔符（默认 </think>）之前的内容视为思维链，丢弃，仅保留其后 */
+function stripCoT(text, sep) {
+  if (!sep) return text;
+  const i = text.indexOf(sep);
+  return i >= 0 ? text.slice(i + sep.length) : text;
+}
+/** 最近 N 条 GM 回复（剥思维链、不截断）+ 本轮玩家输入（仅最新一条玩家，历史玩家输入不收录） */
 function routerContext() {
+  const s = settings();
   const chat = ctx.chat || [];
-  let history = chat;
   let current = '';
-  if (chat.length && chat[chat.length - 1].is_user) {
-    current = chat[chat.length - 1].mes || '';
-    history = chat.slice(0, -1);
-  }
-  const hist = history
-    .slice(-4)
-    .map((m) => `${m.is_user ? '玩家' : 'GM'}：${(m.mes || '').slice(0, 600)}`)
-    .join('\n');
+  if (chat.length && chat[chat.length - 1].is_user) current = chat[chat.length - 1].mes || '';
+  const gm = chat.filter((m) => !m.is_user).slice(-Math.max(1, s.historyCount));
+  const hist = gm
+    .map((m) => stripCoT(m.mes || '', s.cotSeparator).trim())
+    .filter(Boolean)
+    .join('\n\n---\n\n');
   return { hist, current };
 }
 
@@ -123,18 +129,16 @@ async function gatherCandidates() {
   return candidates;
 }
 
-/** 拼装 flash 实际收到的消息（system + user）。currentInput 可传占位符用于预览。 */
+/** 拼装 flash 实际收到的消息（system + user）。currentInput 可传占位符用于预览。
+ *  稳定前缀（提示词 + 候选条目）放 system、可变内容（剧情 + 本轮输入）放 user → 利于上下文缓存命中。 */
 function buildRouterMessages(candidates, currentInput) {
+  const s = settings();
   const { hist } = routerContext();
-  const system = settings().prompt || DEFAULT_PROMPT;
-  const user = [
-    `【最近剧情】\n${hist || '（无）'}`,
-    `【本轮玩家输入】\n${currentInput || '（无）'}`,
-    '【候选条目】\n' +
-      (candidates.length
-        ? candidates.map((c, i) => `${i + 1}. ${c.comment} —— 启用条件：${c.condition}`).join('\n')
-        : '（无：未配置任何文字过滤条目）'),
-  ].join('\n\n');
+  const candText = candidates.length
+    ? candidates.map((c, i) => `${i + 1}. ${c.comment} —— 启用条件：${c.condition}`).join('\n')
+    : '（无：未配置任何文字过滤条目）';
+  const system = `${s.prompt || DEFAULT_PROMPT}\n\n【候选条目】\n${candText}`;
+  const user = `【最近剧情（最近 ${s.historyCount} 条 GM 回复）】\n${hist || '（无）'}\n\n【本轮玩家输入】\n${currentInput || '（无）'}`;
   return { system, user };
 }
 
@@ -286,10 +290,10 @@ function showPreview(system, user, candCount) {
   const wrap = el(`
     <div class="crr-preview-wrap">
       <div class="crr-head">flash 实际收到的提示词预览</div>
-      <div class="crr-pv-label">System（路由提示词）</div>
-      <textarea class="crr-pv text_pole" readonly rows="6"></textarea>
-      <div class="crr-pv-label">User（自动拼装：最近剧情 + 本轮玩家输入 + 候选条目）</div>
-      <textarea class="crr-pv text_pole" readonly rows="18"></textarea>
+      <div class="crr-pv-label">System（路由提示词 + 候选条目 · 每轮稳定，利于缓存）</div>
+      <textarea class="crr-pv text_pole" readonly rows="8"></textarea>
+      <div class="crr-pv-label">User（最近剧情 + 本轮玩家输入 · 每轮变化）</div>
+      <textarea class="crr-pv text_pole" readonly rows="16"></textarea>
       <div class="crr-hint">「本轮玩家输入」处的 <code>Here_is_Participant_input</code> 为占位符，实际发送时替换为你这一轮的输入。${candCount ? '' : '（当前没有开启文字过滤的条目，候选为空。）'}</div>
     </div>`);
   const tas = wrap.querySelectorAll('.crr-pv');
@@ -333,7 +337,18 @@ async function openConfig() {
           </div>
         </div>
         <textarea class="crr-prompt text_pole" rows="5"></textarea>
-        <div class="crr-hint">自动附加在后面的用户消息含「当前情境」与「候选条目（编号 + 启用条件）」。模型须输出 <code>{"启用":[编号,...]}</code>。</div>
+        <div class="crr-hint">候选条目（编号 + 启用条件）自动拼在本提示词后构成 system（稳定、利于缓存）；用户消息含最近剧情与本轮输入。模型须输出 <code>{"启用":[编号,...]}</code>。</div>
+      </div>
+
+      <div class="crr-section">
+        <div class="crr-sec-title"><i class="fa-solid fa-sliders"></i> 上下文设置</div>
+        <div class="crr-grid">
+          <label class="crr-lbl">思维链分隔符</label>
+          <input type="text" class="crr-cot text_pole" placeholder="&lt;/think&gt;" />
+          <label class="crr-lbl">最近 GM 回复条数</label>
+          <input type="number" class="crr-histn text_pole" min="1" max="50" />
+        </div>
+        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。</div>
       </div>
 
       <div class="crr-section crr-flex1">
@@ -349,6 +364,8 @@ async function openConfig() {
   `);
 
   const enabledChk = root.querySelector('.crr-enabled');
+  const cotIn = root.querySelector('.crr-cot');
+  const histIn = root.querySelector('.crr-histn');
   const urlIn = root.querySelector('.crr-url');
   const keyIn = root.querySelector('.crr-key');
   const modelSel = root.querySelector('.crr-model');
@@ -364,6 +381,20 @@ async function openConfig() {
     root.classList.toggle('crr-disabled', !s.enabled);
   });
   root.classList.toggle('crr-disabled', !s.enabled);
+
+  cotIn.value = s.cotSeparator;
+  histIn.value = s.historyCount;
+  cotIn.addEventListener('input', () => {
+    s.cotSeparator = cotIn.value;
+    persist();
+  });
+  histIn.addEventListener('input', () => {
+    const n = parseInt(histIn.value, 10);
+    if (n >= 1) {
+      s.historyCount = n;
+      persist();
+    }
+  });
 
   urlIn.value = s.api.url || '';
   keyIn.value = s.api.key || '';
@@ -446,7 +477,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.4.0 已加载 ✓');
+  console.log('[规则路由] v0.5.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
