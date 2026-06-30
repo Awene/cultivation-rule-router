@@ -220,3 +220,60 @@
   width: 100%;
   font-size: 0.86em;
 }
+
+/* 规则关联 */
+.crr-linkrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.crr-link-label {
+  font-size: 0.82em;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+.crr-link-chips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+.crr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82em;
+  padding: 2px 8px;
+  border-radius: 11px;
+  background: var(--SmartThemeQuoteColor, #6b8afd);
+  color: #fff;
+}
+.crr-chip-x {
+  cursor: pointer;
+  opacity: 0.8;
+}
+.crr-chip-x:hover {
+  opacity: 1;
+}
+.crr-link-add.crr-btn.menu_button {
+  height: 26px;
+  font-size: 0.82em;
+  padding: 0 9px;
+}
+.crr-link-dlg {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crr-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-top: 4px;
+}
