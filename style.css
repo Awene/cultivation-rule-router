@@ -1,11 +1,15 @@
 .crr-config {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   text-align: left;
+  max-width: 760px;
+  margin: 0 auto;
+  width: 100%;
 }
-.crr-config h3 {
-  margin: 0 0 4px;
+.crr-head {
+  font-size: 1.15em;
+  font-weight: 700;
 }
 .crr-section {
   border: 1px solid var(--SmartThemeBorderColor, #444);
@@ -15,60 +19,107 @@
   flex-direction: column;
   gap: 8px;
 }
-.crr-section-title {
+.crr-flex1 {
+  flex: 1;
+  min-height: 0;
+}
+.crr-sec-title {
   font-weight: 600;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
-.crr-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 0.9em;
+.crr-sec-title > .crr-right,
+.crr-sec-title > .crr-btn {
+  margin-left: auto;
 }
-.crr-model-row {
+
+/* API 表单：标签列 + 输入列 */
+.crr-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 10px;
+  align-items: center;
+}
+.crr-lbl {
+  font-size: 0.9em;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.crr-grid .text_pole {
+  width: 100%;
+  margin: 0;
+}
+.crr-inline {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.crr-model-row .crr-model {
+.crr-inline .crr-model,
+.crr-inline .crr-search {
   flex: 1;
+  min-width: 0;
 }
-.crr-fetch,
-.crr-refresh {
+
+/* 按钮：强制横排、自适应宽度、统一高度 */
+.crr-btn.menu_button {
   white-space: nowrap;
-  flex: 0 0 auto;
   width: auto;
+  min-width: max-content;
+  height: 32px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.crr-prompt {
+  width: 100%;
+  font-size: 0.88em;
+  line-height: 1.45;
+  resize: vertical;
 }
 .crr-hint {
-  font-size: 0.82em;
+  font-size: 0.8em;
   opacity: 0.7;
 }
+.crr-hint code {
+  opacity: 0.9;
+}
+
+/* 过滤列表 */
 .crr-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 50vh;
+  gap: 8px;
+  max-height: 42vh;
   overflow-y: auto;
+  padding-right: 4px;
 }
 .crr-book-title {
   font-weight: 600;
-  margin-bottom: 4px;
   position: sticky;
   top: 0;
   background: var(--SmartThemeBlurTintColor, #1e1e1e);
-  padding: 2px 0;
+  padding: 4px 0;
+  z-index: 1;
 }
 .crr-count {
-  opacity: 0.6;
+  opacity: 0.55;
   font-weight: 400;
-  font-size: 0.85em;
+  font-size: 0.82em;
+  margin-left: 4px;
 }
 .crr-entry {
-  padding: 4px 0 6px 10px;
-  border-bottom: 1px dashed var(--SmartThemeBorderColor, #3a3a3a);
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.crr-entry.crr-on {
+  border-color: var(--SmartThemeQuoteColor, #6b8afd);
+  background: rgba(107, 138, 253, 0.08);
 }
 .crr-entry-head {
   display: flex;
@@ -76,16 +127,21 @@
   gap: 8px;
   cursor: pointer;
 }
+.crr-chk {
+  flex: 0 0 auto;
+  margin: 0;
+}
 .crr-entry-name {
   flex: 1;
+  min-width: 0;
 }
 .crr-lamp {
-  font-size: 0.78em;
-  opacity: 0.6;
+  font-size: 0.76em;
+  opacity: 0.55;
   white-space: nowrap;
 }
 .crr-cond {
-  margin-top: 5px;
+  margin-top: 6px;
   width: 100%;
-  font-size: 0.88em;
+  font-size: 0.86em;
 }
