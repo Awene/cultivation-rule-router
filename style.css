@@ -263,6 +263,19 @@
   font-size: 0.82em;
   padding: 0 9px;
 }
+.crr-target {
+  opacity: 0.72;
+}
+.crr-target .crr-entry-name {
+  font-style: italic;
+}
+.crr-target-note {
+  font-size: 0.8em;
+  opacity: 0.85;
+  margin-top: 4px;
+  padding-left: 24px;
+  color: var(--SmartThemeQuoteColor, #6b8afd);
+}
 .crr-link-dlg {
   text-align: left;
   display: flex;

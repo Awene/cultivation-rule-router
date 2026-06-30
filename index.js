@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.7.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.8.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -53,6 +53,24 @@ function setFilter(book, uid, data) {
   const f = settings().filters;
   f[book] = f[book] || {};
   f[book][String(uid)] = data;
+}
+/** 被某个「已启用源」关联的条目 uid 集合（这些条目变为被动，不能独立开启） */
+function targetUidsOf(book) {
+  const f = settings().filters[book] || {};
+  const t = new Set();
+  for (const cfg of Object.values(f)) {
+    if (cfg.enabled && Array.isArray(cfg.linked)) cfg.linked.forEach((l) => t.add(String(l)));
+  }
+  return t;
+}
+/** 关联了某被动条目的源条目名（用于 UI 显示「由 X 关联」） */
+function sourceNamesForTarget(book, targetUid) {
+  const f = settings().filters[book] || {};
+  const names = [];
+  for (const cfg of Object.values(f)) {
+    if (cfg.enabled && (cfg.linked || []).map(String).includes(String(targetUid))) names.push(cfg.comment || '条目');
+  }
+  return names;
 }
 
 // ============ 读取"使用中的世界书"条目 ============
@@ -138,9 +156,10 @@ async function gatherCandidates() {
   const byBook = await inUseEntriesByBook();
   const candidates = [];
   for (const [book, entries] of Object.entries(byBook)) {
+    const targets = targetUidsOf(book); // 被动条目不进候选（不交给 flash 独立判定）
     for (const e of entries) {
       const f = getFilter(book, e.uid);
-      if (f?.enabled && f.condition?.trim()) {
+      if (f?.enabled && f.condition?.trim() && !targets.has(String(e.uid))) {
         candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim(), linked: f.linked || [] });
       }
     }
@@ -230,9 +249,15 @@ async function onBeforeGeneration() {
         }
       }
     });
-    // hideSet = 候选中最终不保留的
+    // 被动（被关联）条目默认隐藏，仅被命中源拉起时才保留
+    const targetKeys = new Set();
+    candidates.forEach((c) => (c.linked || []).forEach((luid) => targetKeys.add(`${c.book}::${luid}`)));
+    // hideSet = (候选 ∪ 被动条目) 中最终不保留的
     candidates.forEach((c) => {
       const key = `${c.book}::${c.uid}`;
+      if (!onUids.has(key)) hideSet.add(key);
+    });
+    targetKeys.forEach((key) => {
       if (!onUids.has(key)) hideSet.add(key);
     });
     clearToast(t0);
@@ -373,6 +398,14 @@ async function openLinkPicker(book, srcUid, srcComment) {
   const f = getFilter(book, srcUid) || { enabled: true, condition: '', comment: srcComment };
   f.linked = [...cur];
   setFilter(book, srcUid, f);
+  // 被关联的条目转为被动：取消其独立启用，使其不再作为源/候选（避免链式与重复判定）
+  for (const tuid of cur) {
+    const tf = getFilter(book, tuid);
+    if (tf?.enabled) {
+      tf.enabled = false;
+      setFilter(book, tuid, tf);
+    }
+  }
   persist();
   return true;
 }
@@ -385,24 +418,46 @@ function renderFilterList(container, query = '') {
     container.innerHTML = '<div class="crr-hint">未检测到使用中的世界书（请先选中角色卡，再点刷新）。</div>';
     return;
   }
+  const rerender = () => renderFilterList(container, query);
   let shown = 0;
   for (const book of books) {
+    const targetUids = targetUidsOf(book);
     const entries = lastByBook[book].filter((e) => !q || (e.comment || '').toLowerCase().includes(q));
     if (!entries.length) continue;
-    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled).length;
+    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled && !targetUids.has(String(e.uid))).length;
     const group = el(
       `<div class="crr-book"><div class="crr-book-title">📖 ${escapeHtml(book)} <span class="crr-count">${entries.length}/${lastByBook[book].length} · 已过滤 ${enabledCount}</span></div></div>`,
     );
     for (const e of entries) {
       shown++;
+      const name = escapeHtml(e.comment || '(无标题 uid ' + e.uid + ')');
+      const lamp = e.constant ? '蓝·常驻' : e.disable ? '关' : '绿·关键词';
+      const isTarget = targetUids.has(String(e.uid));
+
+      // 被动（被关联）条目：锁定，不能独立开启 / 设条件，仅显示由谁关联触发
+      if (isTarget) {
+        const srcs = sourceNamesForTarget(book, e.uid).join('、');
+        const row = el(`
+          <div class="crr-entry crr-target">
+            <label class="crr-entry-head">
+              <input type="checkbox" class="crr-chk" disabled />
+              <span class="crr-entry-name">${name}</span>
+              <span class="crr-lamp">${lamp}</span>
+            </label>
+            <div class="crr-target-note"><i class="fa-solid fa-link"></i> 由 ${escapeHtml(srcs)} 关联触发（不可独立开启）</div>
+          </div>`);
+        group.append(row);
+        continue;
+      }
+
       const f = getFilter(book, e.uid);
       const on = !!f?.enabled;
       const row = el(`
         <div class="crr-entry${on ? ' crr-on' : ''}">
           <label class="crr-entry-head">
             <input type="checkbox" class="crr-chk"${on ? ' checked' : ''} />
-            <span class="crr-entry-name">${escapeHtml(e.comment || '(无标题 uid ' + e.uid + ')')}</span>
-            <span class="crr-lamp">${e.constant ? '蓝·常驻' : e.disable ? '关' : '绿·关键词'}</span>
+            <span class="crr-entry-name">${name}</span>
+            <span class="crr-lamp">${lamp}</span>
           </label>
           <textarea class="crr-cond text_pole" rows="2" placeholder="启用条件（flash 据此判断本条是否打开）：如 进入战斗/交手时"${on ? '' : ' style="display:none"'}></textarea>
           <div class="crr-linkrow"${on ? '' : ' style="display:none"'}>
@@ -413,7 +468,6 @@ function renderFilterList(container, query = '') {
         </div>`);
       const chk = row.querySelector('.crr-chk');
       const cond = row.querySelector('.crr-cond');
-      const linkRow = row.querySelector('.crr-linkrow');
       const chipsEl = row.querySelector('.crr-link-chips');
       cond.value = f?.condition || '';
       const save = () => {
@@ -422,15 +476,13 @@ function renderFilterList(container, query = '') {
         persist();
       };
       chk.addEventListener('change', () => {
-        cond.style.display = chk.checked ? '' : 'none';
-        linkRow.style.display = chk.checked ? '' : 'none';
-        row.classList.toggle('crr-on', chk.checked);
         save();
+        rerender(); // 启停可能改变其它条目的被动状态
       });
       cond.addEventListener('input', save);
       renderLinkChips(chipsEl, book, e.uid);
       row.querySelector('.crr-link-add').addEventListener('click', async () => {
-        if (await openLinkPicker(book, e.uid, e.comment)) renderLinkChips(chipsEl, book, e.uid);
+        if (await openLinkPicker(book, e.uid, e.comment)) rerender(); // 关联变化 → 整表重渲染（被动状态更新）
       });
       group.append(row);
     }
@@ -730,7 +782,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.7.0 已加载 ✓');
+  console.log('[规则路由] v0.8.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
