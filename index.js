@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.3.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.4.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -92,12 +92,50 @@ async function inUseEntriesByBook() {
 }
 
 // ============ flash 路由 ============
-function recentContextText() {
+/** 最近剧情（不含本轮新输入）+ 本轮玩家输入（生成时为 chat 最后一条 is_user） */
+function routerContext() {
   const chat = ctx.chat || [];
-  return chat
+  let history = chat;
+  let current = '';
+  if (chat.length && chat[chat.length - 1].is_user) {
+    current = chat[chat.length - 1].mes || '';
+    history = chat.slice(0, -1);
+  }
+  const hist = history
     .slice(-4)
     .map((m) => `${m.is_user ? '玩家' : 'GM'}：${(m.mes || '').slice(0, 600)}`)
     .join('\n');
+  return { hist, current };
+}
+
+/** 收集"已开启文字过滤且当前在用"的候选条目 */
+async function gatherCandidates() {
+  const byBook = await inUseEntriesByBook();
+  const candidates = [];
+  for (const [book, entries] of Object.entries(byBook)) {
+    for (const e of entries) {
+      const f = getFilter(book, e.uid);
+      if (f?.enabled && f.condition?.trim()) {
+        candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim() });
+      }
+    }
+  }
+  return candidates;
+}
+
+/** 拼装 flash 实际收到的消息（system + user）。currentInput 可传占位符用于预览。 */
+function buildRouterMessages(candidates, currentInput) {
+  const { hist } = routerContext();
+  const system = settings().prompt || DEFAULT_PROMPT;
+  const user = [
+    `【最近剧情】\n${hist || '（无）'}`,
+    `【本轮玩家输入】\n${currentInput || '（无）'}`,
+    '【候选条目】\n' +
+      (candidates.length
+        ? candidates.map((c, i) => `${i + 1}. ${c.comment} —— 启用条件：${c.condition}`).join('\n')
+        : '（无：未配置任何文字过滤条目）'),
+  ].join('\n\n');
+  return { system, user };
 }
 
 async function fetchModels(url, key) {
@@ -109,13 +147,10 @@ async function fetchModels(url, key) {
 }
 
 /** candidates: [{book, uid, comment, condition}] → 返回应"启用"的下标集合(1-based) */
-async function callFlashRouter(candidates, contextText) {
+async function callFlashRouter(candidates) {
   const { url, key, model } = settings().api;
   if (!url || !key || !model) throw new Error('flash API 未配置');
-  const sys = settings().prompt || DEFAULT_PROMPT;
-  const user =
-    `【当前情境】\n${contextText || '（无）'}\n\n【候选条目】\n` +
-    candidates.map((c, i) => `${i + 1}. ${c.comment} —— 启用条件：${c.condition}`).join('\n');
+  const { system, user } = buildRouterMessages(candidates, routerContext().current);
   const base = url.replace(/\/+$/, '');
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -124,7 +159,7 @@ async function callFlashRouter(candidates, contextText) {
       model,
       temperature: 0,
       messages: [
-        { role: 'system', content: sys },
+        { role: 'system', content: system },
         { role: 'user', content: user },
       ],
     }),
@@ -144,21 +179,12 @@ async function onBeforeGeneration() {
   if (!s.enabled) return; // 总开关关闭 → 不路由
   if (!s.api.url || !s.api.key || !s.api.model) return;
 
-  const byBook = await inUseEntriesByBook();
-  const candidates = [];
-  for (const [book, entries] of Object.entries(byBook)) {
-    for (const e of entries) {
-      const f = getFilter(book, e.uid);
-      if (f?.enabled && f.condition?.trim()) {
-        candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim() });
-      }
-    }
-  }
+  const candidates = await gatherCandidates();
   if (!candidates.length) return;
 
   const t0 = toast().info('正在判断本回合规则…', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
   try {
-    const keep = await callFlashRouter(candidates, recentContextText());
+    const keep = await callFlashRouter(candidates);
     const kept = [];
     candidates.forEach((c, i) => {
       if (keep.has(i + 1)) kept.push(c.comment);
@@ -256,6 +282,22 @@ async function refreshList(container, searchInput) {
   renderFilterList(container, searchInput?.value || '');
 }
 
+function showPreview(system, user, candCount) {
+  const wrap = el(`
+    <div class="crr-preview-wrap">
+      <div class="crr-head">flash 实际收到的提示词预览</div>
+      <div class="crr-pv-label">System（路由提示词）</div>
+      <textarea class="crr-pv text_pole" readonly rows="6"></textarea>
+      <div class="crr-pv-label">User（自动拼装：最近剧情 + 本轮玩家输入 + 候选条目）</div>
+      <textarea class="crr-pv text_pole" readonly rows="18"></textarea>
+      <div class="crr-hint">「本轮玩家输入」处的 <code>Here_is_Participant_input</code> 为占位符，实际发送时替换为你这一轮的输入。${candCount ? '' : '（当前没有开启文字过滤的条目，候选为空。）'}</div>
+    </div>`);
+  const tas = wrap.querySelectorAll('.crr-pv');
+  tas[0].value = system;
+  tas[1].value = user;
+  ctx.callGenericPopup(wrap, ctx.POPUP_TYPE.DISPLAY, '', { wide: true, large: true, okButton: '关闭', allowVerticalScrolling: true });
+}
+
 async function openConfig() {
   const s = settings();
   const root = el(`
@@ -284,8 +326,11 @@ async function openConfig() {
       </div>
 
       <div class="crr-section">
-        <div class="crr-sec-title"><i class="fa-solid fa-pen"></i> 路由提示词（给 flash 的 system）
-          <div class="menu_button crr-btn crr-restore" title="恢复默认提示词">恢复默认</div>
+        <div class="crr-sec-title"><i class="fa-solid fa-pen"></i> <span>路由提示词（给 flash 的 system）</span>
+          <div class="crr-inline crr-right">
+            <div class="menu_button crr-btn crr-preview-btn"><i class="fa-solid fa-eye"></i> 预览</div>
+            <div class="menu_button crr-btn crr-restore" title="恢复默认提示词">恢复默认</div>
+          </div>
         </div>
         <textarea class="crr-prompt text_pole" rows="5"></textarea>
         <div class="crr-hint">自动附加在后面的用户消息含「当前情境」与「候选条目（编号 + 启用条件）」。模型须输出 <code>{"启用":[编号,...]}</code>。</div>
@@ -344,6 +389,13 @@ async function openConfig() {
     persist();
   });
 
+  root.querySelector('.crr-preview-btn').addEventListener('click', async () => {
+    s.prompt = promptIn.value; // 用当前（可能未失焦）的提示词
+    const candidates = await gatherCandidates();
+    const { system, user } = buildRouterMessages(candidates, 'Here_is_Participant_input');
+    showPreview(system, user, candidates.length);
+  });
+
   root.querySelector('.crr-fetch').addEventListener('click', async () => {
     apiMsg.textContent = '获取模型中…';
     try {
@@ -394,7 +446,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.3.0 已加载 ✓');
+  console.log('[规则路由] v0.4.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
