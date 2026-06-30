@@ -4,9 +4,9 @@
   "requires": [],
   "optional": ["EjsTemplate"],
   "js": "index.js",
-  "css": "",
+  "css": "style.css",
   "author": "Awene",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "homePage": "",
   "auto_update": false
 }

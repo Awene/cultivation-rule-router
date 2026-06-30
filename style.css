@@ -1,0 +1,91 @@
+.crr-config {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+.crr-config h3 {
+  margin: 0 0 4px;
+}
+.crr-section {
+  border: 1px solid var(--SmartThemeBorderColor, #444);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.crr-section-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.crr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.9em;
+}
+.crr-model-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.crr-model-row .crr-model {
+  flex: 1;
+}
+.crr-fetch,
+.crr-refresh {
+  white-space: nowrap;
+  flex: 0 0 auto;
+  width: auto;
+}
+.crr-hint {
+  font-size: 0.82em;
+  opacity: 0.7;
+}
+.crr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.crr-book-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  position: sticky;
+  top: 0;
+  background: var(--SmartThemeBlurTintColor, #1e1e1e);
+  padding: 2px 0;
+}
+.crr-count {
+  opacity: 0.6;
+  font-weight: 400;
+  font-size: 0.85em;
+}
+.crr-entry {
+  padding: 4px 0 6px 10px;
+  border-bottom: 1px dashed var(--SmartThemeBorderColor, #3a3a3a);
+}
+.crr-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.crr-entry-name {
+  flex: 1;
+}
+.crr-lamp {
+  font-size: 0.78em;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+.crr-cond {
+  margin-top: 5px;
+  width: 100%;
+  font-size: 0.88em;
+}
