@@ -3,13 +3,32 @@
   flex-direction: column;
   gap: 12px;
   text-align: left;
-  max-width: 760px;
+  max-width: 1040px;
   margin: 0 auto;
   width: 100%;
 }
 .crr-head {
   font-size: 1.15em;
   font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.crr-master {
+  font-size: 0.78em;
+  font-weight: 500;
+  opacity: 0.9;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* 总开关关闭：除头部外整体变灰、禁用交互 */
+.crr-config.crr-disabled .crr-section {
+  opacity: 0.45;
+  pointer-events: none;
 }
 .crr-section {
   border: 1px solid var(--SmartThemeBorderColor, #444);
@@ -93,8 +112,8 @@
 .crr-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 42vh;
+  gap: 6px;
+  max-height: 48vh;
   overflow-y: auto;
   padding-right: 4px;
 }
