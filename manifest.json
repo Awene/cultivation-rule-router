@@ -1,0 +1,12 @@
+{
+  "display_name": "修仙规则路由（验证版）",
+  "loading_order": 1000,
+  "requires": [],
+  "optional": ["EjsTemplate"],
+  "js": "index.js",
+  "css": "",
+  "author": "Awene",
+  "version": "0.0.1",
+  "homePage": "",
+  "auto_update": false
+}
