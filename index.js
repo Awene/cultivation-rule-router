@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.5)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.6)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -17,9 +17,32 @@ const DEFAULT_STRIP_TAGS = 'StatusPlaceHolderImpl,disclaimer,UpdateVariable,opti
 let ctx = null;
 /** 本次生成要隐藏的条目键集合：`${world}::${uid}` */
 let hideSet = new Set();
-/** flash 结果缓存（LRU）：完整请求提示词 -> 启用编号数组。用于重生成/swipe/回退同输入时复用 */
+/** flash 结果缓存（LRU）：请求提示词哈希 -> 启用编号数组。用于重生成/swipe/回退同输入时复用 */
 const routeCache = new Map();
 let lastRouteCached = false;
+let lastRouteHash = '';
+/** 上一次路由的记录，待挂到即将收到的 AI 楼层 extra 上（供逐层查看） */
+let pendingRoute = null;
+
+/** 轻量字符串哈希（djb2），用于缓存键与楼层记录标识 */
+function hashStr(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+/** routeCache 按完整提示词字符串存；这里按哈希查/删（缓存很小，遍历即可） */
+function cacheHasHash(hash) {
+  for (const k of routeCache.keys()) if (hashStr(k) === hash) return true;
+  return false;
+}
+function cacheDeleteByHash(hash) {
+  for (const k of routeCache.keys())
+    if (hashStr(k) === hash) {
+      routeCache.delete(k);
+      return true;
+    }
+  return false;
+}
 
 // ============ 设置 ============
 function settings() {
@@ -201,6 +224,7 @@ async function callFlashRouter(candidates) {
   const { system, user } = buildRouterMessages(candidates, routerContext().current);
   const cacheKey = `${system} ${user}`;
   lastRouteCached = false;
+  lastRouteHash = hashStr(cacheKey);
 
   // 命中缓存：提示词逐字节相同（重生成/swipe/回退同输入）→ 直接复用，不再调 flash
   if (s.cacheSize > 0 && routeCache.has(cacheKey)) {
@@ -245,6 +269,7 @@ async function callFlashRouter(candidates) {
 async function onBeforeGeneration(type, _options, dryRun) {
   if (dryRun || type === 'quiet' || type === 'impersonate') return;
   hideSet = new Set();
+  pendingRoute = null;
   const s = settings();
   if (!s.enabled) return; // 总开关关闭 → 不路由
   if (!s.api.url || !s.api.key || !s.api.model) return;
@@ -279,17 +304,35 @@ async function onBeforeGeneration(type, _options, dryRun) {
     });
     // 被动（被关联）条目默认隐藏，仅被命中源拉起时才保留
     const targetKeys = new Set();
-    candidates.forEach((c) => (c.linked || []).forEach((luid) => targetKeys.add(`${c.book}::${luid}`)));
+    const targetInfo = new Map(); // key -> {book, uid}
+    candidates.forEach((c) =>
+      (c.linked || []).forEach((luid) => {
+        const key = `${c.book}::${luid}`;
+        targetKeys.add(key);
+        targetInfo.set(key, { book: c.book, uid: luid });
+      }),
+    );
     // hideSet = (候选 ∪ 被动条目) 中最终不保留的
+    const hiddenNames = [];
     candidates.forEach((c) => {
       const key = `${c.book}::${c.uid}`;
-      if (!onUids.has(key)) hideSet.add(key);
+      if (!onUids.has(key)) {
+        hideSet.add(key);
+        hiddenNames.push(c.comment);
+      }
     });
     targetKeys.forEach((key) => {
-      if (!onUids.has(key)) hideSet.add(key);
+      if (!onUids.has(key)) {
+        hideSet.add(key);
+        const info = targetInfo.get(key);
+        hiddenNames.push(nameOf(info.book, info.uid));
+      }
     });
+    // 记录本次路由，稍后挂到即将收到的 AI 楼层
+    const statLine = `候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
+    pendingRoute = { statLine, kept: keptNames, linked: linkedNames, hidden: hiddenNames, cached: lastRouteCached, hash: lastRouteHash };
     clearToast(t0);
-    const stats = `[规则路由] 候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
+    const stats = `[规则路由] ${statLine}`;
     const msg = lastRouteCached ? `世界书开关使用缓存结果：${stats}（缓存命中）` : stats;
     toast().success(msg, '🧭 规则路由', { timeOut: 4500 });
     console.log(lastRouteCached ? `${msg}` : stats);
@@ -541,6 +584,99 @@ function showPreview(system, user, candCount) {
   tas[0].value = system;
   tas[1].value = user;
   ctx.callGenericPopup(wrap, ctx.POPUP_TYPE.DISPLAY, '', { wide: true, large: true, okButton: '关闭', allowVerticalScrolling: true });
+}
+
+// ============ 逐层路由记录 + 楼层查看按钮 ============
+/** 新 AI 楼层收到时，把本次路由记录挂到它的 extra 上 */
+async function onMessageReceived(mesId) {
+  if (!pendingRoute) return;
+  const idx = Number(mesId);
+  const msg = ctx.chat?.[idx];
+  if (!msg || msg.is_user) return; // 只挂到 AI 回复楼层
+  msg.extra = msg.extra || {};
+  msg.extra.crr_route = pendingRoute;
+  pendingRoute = null;
+  try {
+    await ctx.saveChat();
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function fmtRecord(r) {
+  const line = (label, arr) => `${label}：${arr && arr.length ? arr.join('、') : '（无）'}`;
+  return [
+    `统计：${r.statLine || '（无）'}`,
+    line('命中开启', r.kept),
+    line('关联开启', r.linked),
+    line('隐藏', r.hidden),
+    `本次来源：${r.cached ? '缓存复用（未调用 flash）' : 'flash 实时判定'}`,
+  ].join('\n');
+}
+
+function openFloorPanel(mesid) {
+  const idx = Number(mesid);
+  const msg = ctx.chat?.[idx];
+  const isUser = !!msg?.is_user;
+  const wrap = el('<div class="crr-floor-panel"><div class="crr-head"></div><div class="crr-floor-body"></div></div>');
+  const head = wrap.querySelector('.crr-head');
+  const body = wrap.querySelector('.crr-floor-body');
+
+  if (isUser) {
+    head.textContent = `本层路由缓存 · 玩家楼层 #${idx}`;
+    const next = ctx.chat?.[idx + 1];
+    const rec = next && !next.is_user ? next.extra?.crr_route : null;
+    if (!rec) {
+      body.innerHTML = '<div class="crr-hint">本层暂无路由记录（尚未生成回复，或该回复无记录）。</div>';
+    } else {
+      const status = el('<div class="crr-floor-status"></div>');
+      const pre = el('<pre class="crr-floor-pre"></pre>');
+      pre.textContent = fmtRecord(rec);
+      const clearBtn = el('<div class="menu_button crr-btn"><i class="fa-solid fa-trash-can"></i> 清除本层缓存</div>');
+      const refresh = () => {
+        const has = rec.hash && cacheHasHash(rec.hash);
+        status.innerHTML = `缓存状态：${has ? '<b>已缓存</b>（本会话内可复用，避免重复调用 flash）' : '未缓存（已过期 / 已清除 / 重载后丢失）'}`;
+        clearBtn.style.display = has ? '' : 'none';
+      };
+      clearBtn.addEventListener('click', () => {
+        cacheDeleteByHash(rec.hash);
+        toast().success('已清除本层缓存', '🧭 规则路由', { timeOut: 2500 });
+        refresh();
+      });
+      body.append(status, pre, clearBtn);
+      refresh();
+    }
+  } else {
+    head.textContent = `本层路由情况 · AI 回复楼层 #${idx}`;
+    const rec = msg?.extra?.crr_route;
+    if (!rec) {
+      body.innerHTML = '<div class="crr-hint">本层无路由记录（导入的旧楼层，或本轮未运行路由）。</div>';
+    } else {
+      const pre = el('<pre class="crr-floor-pre"></pre>');
+      pre.textContent = fmtRecord(rec);
+      body.append(pre);
+    }
+  }
+  ctx.callGenericPopup(wrap, ctx.POPUP_TYPE.DISPLAY, '', { okButton: '关闭', allowVerticalScrolling: true });
+}
+
+function addFloorButton(mesEl) {
+  if (!mesEl) return;
+  const extra = mesEl.querySelector('.extraMesButtons');
+  if (!extra || extra.querySelector('.crr_floor_btn')) return;
+  const btn = document.createElement('div');
+  btn.className = 'mes_button crr_floor_btn fa-solid fa-route interactable';
+  btn.title = '规则路由 · 本层路由/缓存';
+  btn.tabIndex = 0;
+  btn.setAttribute('role', 'button');
+  btn.addEventListener('click', () => openFloorPanel(mesEl.getAttribute('mesid')));
+  extra.prepend(btn);
+}
+function addFloorButtonById(mesId) {
+  addFloorButton(document.querySelector(`#chat .mes[mesid="${mesId}"]`));
+}
+function addFloorButtonsToAll() {
+  document.querySelectorAll('#chat .mes').forEach(addFloorButton);
 }
 
 async function openConfig() {
@@ -835,9 +971,16 @@ function start() {
   const ET = ctx.eventTypes;
   ctx.eventSource.on(ET.GENERATION_AFTER_COMMANDS, onBeforeGeneration);
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
+  // 逐层路由记录 + 楼层查看按钮
+  ctx.eventSource.on(ET.MESSAGE_RECEIVED, onMessageReceived);
+  ctx.eventSource.on(ET.USER_MESSAGE_RENDERED, addFloorButtonById);
+  ctx.eventSource.on(ET.CHARACTER_MESSAGE_RENDERED, addFloorButtonById);
+  ctx.eventSource.on(ET.MESSAGE_UPDATED, addFloorButtonById);
+  if (ET.CHAT_CHANGED) ctx.eventSource.on(ET.CHAT_CHANGED, () => setTimeout(addFloorButtonsToAll, 300));
+  setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.5 已加载 ✓');
+  console.log('[规则路由] v0.9.6 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
