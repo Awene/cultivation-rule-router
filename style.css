@@ -311,6 +311,13 @@
   padding-left: 24px;
   color: var(--SmartThemeQuoteColor, #6b8afd);
 }
+.crr-linked-by {
+  font-size: 0.78em;
+  opacity: 0.75;
+  margin-top: 5px;
+  padding-left: 24px;
+  color: var(--SmartThemeQuoteColor, #6b8afd);
+}
 .crr-link-dlg {
   text-align: left;
   display: flex;

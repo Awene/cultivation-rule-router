@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.9.8)
+// 规则路由 · Cultivation Rule Router (v0.9.9)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -184,10 +184,10 @@ async function gatherCandidates() {
   const byBook = await inUseEntriesByBook();
   const candidates = [];
   for (const [book, entries] of Object.entries(byBook)) {
-    const targets = targetUidsOf(book); // 被动条目不进候选（不交给 flash 独立判定）
     for (const e of entries) {
       const f = getFilter(book, e.uid);
-      if (f?.enabled && f.condition?.trim() && !targets.has(String(e.uid))) {
+      // 任何"启用+有条件"的条目都是候选（即便同时被别人关联，也可自主判定）
+      if (f?.enabled && f.condition?.trim()) {
         candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim(), linked: f.linked || [] });
       }
     }
@@ -272,7 +272,8 @@ async function callFlashRouter(candidates) {
  * 未路由/未配置/失败时全部写空数组 []（＝没有任何条目被隐藏 → 卡侧显示全部）。
  */
 function setRouteVars(kept, linked, hidden) {
-  const cm = ctx.chatMetadata;
+  // 取实时 chatMetadata（ST 换聊天时会重建该对象，start() 缓存的 ctx.chatMetadata 会过期）
+  const cm = SillyTavern.getContext().chatMetadata;
   if (!cm) return;
   cm.variables = cm.variables || {};
   cm.variables['路由命中规则'] = JSON.stringify(kept || []);
@@ -335,13 +336,14 @@ async function onBeforeGeneration(type, _options, dryRun) {
     const hiddenNames = [];
     candidates.forEach((c) => {
       const key = `${c.book}::${c.uid}`;
-      if (!onUids.has(key)) {
+      if (!onUids.has(key) && !hideSet.has(key)) {
         hideSet.add(key);
         hiddenNames.push(c.comment);
       }
     });
     targetKeys.forEach((key) => {
-      if (!onUids.has(key)) {
+      // 条目可能同时是候选与被关联目标，已计入则跳过（避免重复计数/重复名）
+      if (!onUids.has(key) && !hideSet.has(key)) {
         hideSet.add(key);
         const info = targetInfo.get(key);
         hiddenNames.push(nameOf(info.book, info.uid));
@@ -491,14 +493,6 @@ async function openLinkPicker(book, srcUid, srcComment) {
   const f = getFilter(book, srcUid) || { enabled: true, condition: '', comment: srcComment };
   f.linked = [...cur];
   setFilter(book, srcUid, f);
-  // 被关联的条目转为被动：取消其独立启用，使其不再作为源/候选（避免链式与重复判定）
-  for (const tuid of cur) {
-    const tf = getFilter(book, tuid);
-    if (tf?.enabled) {
-      tf.enabled = false;
-      setFilter(book, tuid, tf);
-    }
-  }
   persist();
   return true;
 }
@@ -514,12 +508,11 @@ function renderFilterList(container, query = '') {
   const rerender = () => renderFilterList(container, query);
   let shown = 0;
   for (const book of books) {
-    const targetUids = targetUidsOf(book);
     const entries = lastByBook[book]
       .filter((e) => !q || (e.comment || '').toLowerCase().includes(q))
       .sort((a, b) => (a.comment || '').localeCompare(b.comment || '', 'zh')); // 按名称排序
     if (!entries.length) continue;
-    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled && !targetUids.has(String(e.uid))).length;
+    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled).length;
     const group = el(
       `<div class="crr-book"><div class="crr-book-title">📖 ${escapeHtml(book)} <span class="crr-count">${entries.length}/${lastByBook[book].length} · 已过滤 ${enabledCount}</span></div></div>`,
     );
@@ -527,23 +520,7 @@ function renderFilterList(container, query = '') {
       shown++;
       const name = escapeHtml(e.comment || '(无标题 uid ' + e.uid + ')');
       const lamp = e.constant ? '蓝·常驻' : e.disable ? '关' : '绿·关键词';
-      const isTarget = targetUids.has(String(e.uid));
-
-      // 被动（被关联）条目：锁定，不能独立开启 / 设条件，仅显示由谁关联触发
-      if (isTarget) {
-        const srcs = sourceNamesForTarget(book, e.uid).join('、');
-        const row = el(`
-          <div class="crr-entry crr-target">
-            <label class="crr-entry-head">
-              <input type="checkbox" class="crr-chk" disabled />
-              <span class="crr-entry-name">${name}</span>
-              <span class="crr-lamp">${lamp}</span>
-            </label>
-            <div class="crr-target-note"><i class="fa-solid fa-link"></i> 由 ${escapeHtml(srcs)} 关联触发（不可独立开启）</div>
-          </div>`);
-        group.append(row);
-        continue;
-      }
+      const linkedBy = sourceNamesForTarget(book, e.uid); // 被哪些启用源关联（仅信息提示；条目仍可自设条件独立触发）
 
       const f = getFilter(book, e.uid);
       const on = !!f?.enabled;
@@ -560,6 +537,7 @@ function renderFilterList(container, query = '') {
             <span class="crr-link-chips"></span>
             <div class="menu_button crr-btn crr-link-add"><i class="fa-solid fa-link"></i> 关联</div>
           </div>
+          ${linkedBy.length ? `<div class="crr-linked-by"><i class="fa-solid fa-arrow-down-long"></i> 被 ${escapeHtml(linkedBy.join('、'))} 关联触发（被触发时开启；也可勾选上方自设独立条件）</div>` : ''}
         </div>`);
       const chk = row.querySelector('.crr-chk');
       const cond = row.querySelector('.crr-cond');
@@ -1002,7 +980,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.8 已加载 ✓');
+  console.log('[规则路由] v0.9.9 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
