@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.1)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -586,14 +586,20 @@ async function openConfig() {
         <div class="crr-grid">
           <label class="crr-lbl">思维链分隔符</label>
           <input type="text" class="crr-cot text_pole" placeholder="&lt;/think&gt;" />
+          <div class="crr-hint crr-grid-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）。</div>
+
           <label class="crr-lbl">最近 GM 回复条数</label>
           <input type="number" class="crr-histn text_pole" min="1" max="50" />
+          <div class="crr-hint crr-grid-hint">仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。</div>
+
           <label class="crr-lbl">标签剔除</label>
           <input type="text" class="crr-striptags text_pole" placeholder="如 think,StatusPlaceHolderImpl（逗号分隔，可留空）" />
+          <div class="crr-hint crr-grid-hint">把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除（逗号分隔多个，可留空）。</div>
+
           <label class="crr-lbl">结果缓存条数</label>
-          <input type="number" class="crr-cache text_pole" min="0" max="100" title="0=关闭；重生成/回退同输入时复用旧结果，不再调 flash" />
+          <input type="number" class="crr-cache text_pole" min="0" max="100" title="0=关闭" />
+          <div class="crr-hint crr-grid-hint">请求提示词逐字节相同（重生成 / swipe / 回退同输入）时复用旧结果、不再调用 flash（0=关闭）。</div>
         </div>
-        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；标签剔除会把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。结果缓存：请求提示词逐字节相同（重生成/swipe/回退同输入）时复用旧结果、不再调用 flash（0=关闭）。</div>
       </div>
 
       <div class="crr-section crr-flex1">
@@ -824,7 +830,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.0 已加载 ✓');
+  console.log('[规则路由] v0.9.1 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {

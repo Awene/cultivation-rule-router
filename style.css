@@ -69,6 +69,11 @@
   width: 100%;
   margin: 0;
 }
+/* 每项配置下方的独立说明小字（横跨标签+输入两列） */
+.crr-grid-hint {
+  grid-column: 1 / -1;
+  margin: -3px 0 6px;
+}
 .crr-inline {
   display: flex;
   gap: 8px;
