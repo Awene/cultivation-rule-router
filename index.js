@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.9.7)
+// 规则路由 · Cultivation Rule Router (v0.9.8)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -263,15 +263,22 @@ async function callFlashRouter(candidates) {
 }
 
 /**
- * 把本回合"激活的规则条目名"写入 chat 变量，供角色卡 COT 用 EJS `getvar('路由激活规则')` 条件拼装。
- * - 传数组 → 写 JSON（如 ["[战斗规则]","[突破规则]"]）；
- * - 传 null（未路由/未配置/失败）→ 写 'ALL'，卡侧据此显示全部（没装本插件时同样为默认全部）。
+ * 把本回合路由结果写入 chat 变量，供角色卡（EJS `getvar('...')` 或宏 `{{getvar::...}}`）读取。
+ * 均为 JSON 数组字符串：
+ * - 路由命中规则：flash 直接命中开启的候选
+ * - 路由关联规则：被命中源关联而开启的被动条目
+ * - 路由隐藏规则：本回合被隐藏/关闭的条目 ← 卡侧应据此判断"被隐藏才不插入"（常驻/未设条件的规则不在此列，故照常显示）
+ * - 路由激活规则：命中 + 关联（因路由而开的全部；保留兼容）
+ * 未路由/未配置/失败时全部写空数组 []（＝没有任何条目被隐藏 → 卡侧显示全部）。
  */
-function setActiveRulesVar(activeNames) {
+function setRouteVars(kept, linked, hidden) {
   const cm = ctx.chatMetadata;
   if (!cm) return;
   cm.variables = cm.variables || {};
-  cm.variables['路由激活规则'] = activeNames ? JSON.stringify(activeNames) : 'ALL';
+  cm.variables['路由命中规则'] = JSON.stringify(kept || []);
+  cm.variables['路由关联规则'] = JSON.stringify(linked || []);
+  cm.variables['路由隐藏规则'] = JSON.stringify(hidden || []);
+  cm.variables['路由激活规则'] = JSON.stringify([...(kept || []), ...(linked || [])]);
 }
 
 // ============ 运行时 ============
@@ -283,11 +290,11 @@ async function onBeforeGeneration(type, _options, dryRun) {
   hideSet = new Set();
   pendingRoute = null;
   const s = settings();
-  if (!s.enabled) return setActiveRulesVar(null); // 总开关关闭 → 不路由（卡侧显示全部）
-  if (!s.api.url || !s.api.key || !s.api.model) return setActiveRulesVar(null);
+  if (!s.enabled) return setRouteVars([], [], []); // 总开关关闭 → 不路由（无隐藏 → 卡侧显示全部）
+  if (!s.api.url || !s.api.key || !s.api.model) return setRouteVars([], [], []);
 
   const { candidates, byBook } = await gatherCandidates();
-  if (!candidates.length) return setActiveRulesVar(null);
+  if (!candidates.length) return setRouteVars([], [], []);
   const nameOf = (book, uid) => (byBook[book] || []).find((e) => String(e.uid) === String(uid))?.comment || `#${uid}`;
 
   const t0 = toast().info('正在判断世界书条目开关', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
@@ -343,8 +350,8 @@ async function onBeforeGeneration(type, _options, dryRun) {
     // 记录本次路由，稍后挂到即将收到的 AI 楼层
     const statLine = `候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
     pendingRoute = { statLine, kept: keptNames, linked: linkedNames, hidden: hiddenNames, cached: lastRouteCached, hash: lastRouteHash };
-    // 写入激活规则清单（命中 + 关联），供角色卡 COT 条件拼装
-    setActiveRulesVar([...keptNames, ...linkedNames]);
+    // 写入路由结果（命中/关联/隐藏），供角色卡 COT 条件拼装
+    setRouteVars(keptNames, linkedNames, hiddenNames);
     clearToast(t0);
     const stats = `[规则路由] ${statLine}`;
     const msg = lastRouteCached ? `世界书开关使用缓存结果：${stats}（缓存命中）` : stats;
@@ -355,7 +362,7 @@ async function onBeforeGeneration(type, _options, dryRun) {
     toast().warning('路由失败，本回合规则照常', '🧭 规则路由', { timeOut: 4000 });
     console.warn('[规则路由] flash 路由失败，本回合不隐藏任何条目:', e);
     hideSet = new Set();
-    setActiveRulesVar(null); // 失败 → 卡侧显示全部
+    setRouteVars([], [], []); // 失败 → 无隐藏 → 卡侧显示全部
   }
 }
 
@@ -995,7 +1002,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.7 已加载 ✓');
+  console.log('[规则路由] v0.9.8 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
