@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.8.0)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -16,6 +16,9 @@ const DEFAULT_PROMPT =
 let ctx = null;
 /** 本次生成要隐藏的条目键集合：`${world}::${uid}` */
 let hideSet = new Set();
+/** flash 结果缓存（LRU）：完整请求提示词 -> 启用编号数组。用于重生成/swipe/回退同输入时复用 */
+const routeCache = new Map();
+let lastRouteCached = false;
 
 // ============ 设置 ============
 function settings() {
@@ -29,6 +32,7 @@ function settings() {
   if (typeof s.cotSeparator !== 'string') s.cotSeparator = '</think>'; // 思维链分隔符
   if (typeof s.historyCount !== 'number') s.historyCount = 4; // 收录最近 N 条 GM 回复
   if (typeof s.stripTags !== 'string') s.stripTags = ''; // 标签剔除（逗号分隔的标签名）
+  if (typeof s.cacheSize !== 'number') s.cacheSize = 5; // flash 结果缓存条数（0=关闭）
   return s;
 }
 function toast() {
@@ -190,9 +194,22 @@ async function fetchModels(url, key) {
 
 /** candidates: [{book, uid, comment, condition}] → 返回应"启用"的下标集合(1-based) */
 async function callFlashRouter(candidates) {
-  const { url, key, model } = settings().api;
+  const s = settings();
+  const { url, key, model } = s.api;
   if (!url || !key || !model) throw new Error('flash API 未配置');
   const { system, user } = buildRouterMessages(candidates, routerContext().current);
+  const cacheKey = `${system} ${user}`;
+  lastRouteCached = false;
+
+  // 命中缓存：提示词逐字节相同（重生成/swipe/回退同输入）→ 直接复用，不再调 flash
+  if (s.cacheSize > 0 && routeCache.has(cacheKey)) {
+    const cached = routeCache.get(cacheKey);
+    routeCache.delete(cacheKey);
+    routeCache.set(cacheKey, cached); // 提为最近使用
+    lastRouteCached = true;
+    return new Set(cached);
+  }
+
   const base = url.replace(/\/+$/, '');
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -211,7 +228,13 @@ async function callFlashRouter(candidates) {
   const txt = data?.choices?.[0]?.message?.content || '';
   const m = txt.match(/\{[\s\S]*\}/);
   const obj = m ? JSON.parse(m[0]) : { 启用: [] };
-  return new Set((obj.启用 || []).map(Number));
+  const keepArr = [...new Set((obj.启用 || []).map(Number))];
+
+  if (s.cacheSize > 0) {
+    routeCache.set(cacheKey, keepArr);
+    while (routeCache.size > s.cacheSize) routeCache.delete(routeCache.keys().next().value); // 淘汰最旧
+  }
+  return new Set(keepArr);
 }
 
 // ============ 运行时 ============
@@ -261,12 +284,13 @@ async function onBeforeGeneration() {
       if (!onUids.has(key)) hideSet.add(key);
     });
     clearToast(t0);
+    const suffix = lastRouteCached ? ' · 缓存' : '';
     const msg =
       keptNames.length || linkedNames.length
         ? `开启：${keptNames.join('、') || '（无）'}${linkedNames.length ? `；关联：${linkedNames.join('、')}` : ''}`
         : '本回合未开启任何受控规则';
-    toast().success(msg, '🧭 规则路由', { timeOut: 4500 });
-    console.log(`[规则路由] 候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`);
+    toast().success(msg + suffix, '🧭 规则路由', { timeOut: 4500 });
+    console.log(`[规则路由] 候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}${lastRouteCached ? '（缓存命中）' : ''}`);
   } catch (e) {
     clearToast(t0);
     toast().warning('路由失败，本回合规则照常', '🧭 规则路由', { timeOut: 4000 });
@@ -556,7 +580,9 @@ async function openConfig() {
       </div>
 
       <div class="crr-section">
-        <div class="crr-sec-title"><i class="fa-solid fa-sliders"></i> 上下文设置</div>
+        <div class="crr-sec-title"><i class="fa-solid fa-sliders"></i> <span>上下文设置</span>
+          <div class="menu_button crr-btn crr-cache-clear crr-right">清空缓存</div>
+        </div>
         <div class="crr-grid">
           <label class="crr-lbl">思维链分隔符</label>
           <input type="text" class="crr-cot text_pole" placeholder="&lt;/think&gt;" />
@@ -564,8 +590,10 @@ async function openConfig() {
           <input type="number" class="crr-histn text_pole" min="1" max="50" />
           <label class="crr-lbl">标签剔除</label>
           <input type="text" class="crr-striptags text_pole" placeholder="如 think,StatusPlaceHolderImpl（逗号分隔，可留空）" />
+          <label class="crr-lbl">结果缓存条数</label>
+          <input type="number" class="crr-cache text_pole" min="0" max="100" title="0=关闭；重生成/回退同输入时复用旧结果，不再调 flash" />
         </div>
-        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；标签剔除会把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。</div>
+        <div class="crr-hint">分隔符之前的内容视作思维链、不送入 flash（默认 <code>&lt;/think&gt;</code>）；标签剔除会把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除；仅收录最近 N 条 GM 回复（玩家历史输入不进，只保留本轮输入）；不再截断字数。结果缓存：请求提示词逐字节相同（重生成/swipe/回退同输入）时复用旧结果、不再调用 flash（0=关闭）。</div>
       </div>
 
       <div class="crr-section crr-flex1">
@@ -584,6 +612,7 @@ async function openConfig() {
   const cotIn = root.querySelector('.crr-cot');
   const histIn = root.querySelector('.crr-histn');
   const tagIn = root.querySelector('.crr-striptags');
+  const cacheIn = root.querySelector('.crr-cache');
   const urlIn = root.querySelector('.crr-url');
   const keyIn = root.querySelector('.crr-key');
   const modelSel = root.querySelector('.crr-model');
@@ -617,6 +646,19 @@ async function openConfig() {
   tagIn.addEventListener('input', () => {
     s.stripTags = tagIn.value;
     persist();
+  });
+  cacheIn.value = s.cacheSize;
+  cacheIn.addEventListener('input', () => {
+    const n = parseInt(cacheIn.value, 10);
+    if (n >= 0) {
+      s.cacheSize = n;
+      while (routeCache.size > n) routeCache.delete(routeCache.keys().next().value);
+      persist();
+    }
+  });
+  root.querySelector('.crr-cache-clear').addEventListener('click', () => {
+    routeCache.clear();
+    toast().success('已清空 flash 结果缓存', '🧭 规则路由', { timeOut: 2500 });
   });
 
   urlIn.value = s.api.url || '';
@@ -782,7 +824,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.8.0 已加载 ✓');
+  console.log('[规则路由] v0.9.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
