@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.4)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.5)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -239,7 +239,11 @@ async function callFlashRouter(candidates) {
 }
 
 // ============ 运行时 ============
-async function onBeforeGeneration() {
+// 事件参数：(type, options, dryRun)。
+// dryRun=令牌重算/提示词预览（如删楼、改楼后其它扩展的后台重算）；quiet=后台生成（总结等）；impersonate=替玩家代写。
+// 这些都不是"玩家推进正文"，不应路由，也不应改动 hideSet（以免打断正在进行的真实生成）。
+async function onBeforeGeneration(type, _options, dryRun) {
+  if (dryRun || type === 'quiet' || type === 'impersonate') return;
   hideSet = new Set();
   const s = settings();
   if (!s.enabled) return; // 总开关关闭 → 不路由
@@ -833,7 +837,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.4 已加载 ✓');
+  console.log('[规则路由] v0.9.5 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
