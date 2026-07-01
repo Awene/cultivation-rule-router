@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.3)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.4)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -249,7 +249,7 @@ async function onBeforeGeneration() {
   if (!candidates.length) return;
   const nameOf = (book, uid) => (byBook[book] || []).find((e) => String(e.uid) === String(uid))?.comment || `#${uid}`;
 
-  const t0 = toast().info('正在判断本回合规则…', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
+  const t0 = toast().info('正在判断世界书条目开关', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
   try {
     const keep = await callFlashRouter(candidates);
     const onUids = new Set();
@@ -285,13 +285,10 @@ async function onBeforeGeneration() {
       if (!onUids.has(key)) hideSet.add(key);
     });
     clearToast(t0);
-    const suffix = lastRouteCached ? ' · 缓存' : '';
-    const msg =
-      keptNames.length || linkedNames.length
-        ? `开启：${keptNames.join('、') || '（无）'}${linkedNames.length ? `；关联：${linkedNames.join('、')}` : ''}`
-        : '本回合未开启任何受控规则';
-    toast().success(msg + suffix, '🧭 规则路由', { timeOut: 4500 });
-    console.log(`[规则路由] 候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}${lastRouteCached ? '（缓存命中）' : ''}`);
+    const stats = `[规则路由] 候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
+    const msg = lastRouteCached ? `世界书开关使用缓存结果：${stats}（缓存命中）` : stats;
+    toast().success(msg, '🧭 规则路由', { timeOut: 4500 });
+    console.log(lastRouteCached ? `${msg}` : stats);
   } catch (e) {
     clearToast(t0);
     toast().warning('路由失败，本回合规则照常', '🧭 规则路由', { timeOut: 4000 });
@@ -836,7 +833,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.3 已加载 ✓');
+  console.log('[规则路由] v0.9.4 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
