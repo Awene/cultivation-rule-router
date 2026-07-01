@@ -80,7 +80,8 @@
   align-items: center;
 }
 .crr-inline .crr-model,
-.crr-inline .crr-search {
+.crr-inline .crr-search,
+.crr-inline .crr-cache {
   flex: 1;
   min-width: 0;
 }

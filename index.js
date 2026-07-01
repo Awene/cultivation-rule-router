@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.1)
+// 修仙规则路由 · Cultivation Rule Router (v0.9.2)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -9,9 +9,10 @@
 const SETTINGS_KEY = 'cultivation_rule_router';
 
 const DEFAULT_PROMPT =
-  '你是"世界书条目路由器"。根据【当前情境】，逐条判断下列【候选条目】的启用条件是否被当前情境满足。\n' +
+  '你是"世界书条目路由器"，工作是决定AIRP中本轮应当开启哪些世界书条目：根据【当前情境】与【本轮玩家输入】，逐条判断下列【候选条目】的启用条件，决定本轮是否启用这些【候选条目】。\n' +
   '- 只选出条件确实满足的条目编号；拿不准、无明确迹象则不选。\n' +
   '- 严格只输出 JSON：{"启用":[编号,...]}，不要任何解释或多余文本。';
+const DEFAULT_STRIP_TAGS = 'StatusPlaceHolderImpl,disclaimer,UpdateVariable,options';
 
 let ctx = null;
 /** 本次生成要隐藏的条目键集合：`${world}::${uid}` */
@@ -31,7 +32,7 @@ function settings() {
   if (typeof s.enabled !== 'boolean') s.enabled = true; // 插件总开关
   if (typeof s.cotSeparator !== 'string') s.cotSeparator = '</think>'; // 思维链分隔符
   if (typeof s.historyCount !== 'number') s.historyCount = 4; // 收录最近 N 条 GM 回复
-  if (typeof s.stripTags !== 'string') s.stripTags = ''; // 标签剔除（逗号分隔的标签名）
+  if (typeof s.stripTags !== 'string') s.stripTags = DEFAULT_STRIP_TAGS; // 标签剔除（逗号分隔的标签名）
   if (typeof s.cacheSize !== 'number') s.cacheSize = 5; // flash 结果缓存条数（0=关闭）
   return s;
 }
@@ -386,7 +387,9 @@ function renderLinkChips(span, book, uid) {
 
 /** 关联选择器：带搜索的勾选列表（同一世界书其他条目），返回是否有改动 */
 async function openLinkPicker(book, srcUid, srcComment) {
-  const entries = (lastByBook[book] || []).filter((e) => String(e.uid) !== String(srcUid));
+  const entries = (lastByBook[book] || [])
+    .filter((e) => String(e.uid) !== String(srcUid))
+    .sort((a, b) => (a.comment || '').localeCompare(b.comment || '', 'zh')); // 按名称排序，[ 开头的聚在一起
   const cur = new Set((getFilter(book, srcUid)?.linked || []).map(String));
   const dlg = el(`
     <div class="crr-link-dlg">
@@ -446,7 +449,9 @@ function renderFilterList(container, query = '') {
   let shown = 0;
   for (const book of books) {
     const targetUids = targetUidsOf(book);
-    const entries = lastByBook[book].filter((e) => !q || (e.comment || '').toLowerCase().includes(q));
+    const entries = lastByBook[book]
+      .filter((e) => !q || (e.comment || '').toLowerCase().includes(q))
+      .sort((a, b) => (a.comment || '').localeCompare(b.comment || '', 'zh')); // 按名称排序
     if (!entries.length) continue;
     const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled && !targetUids.has(String(e.uid))).length;
     const group = el(
@@ -580,9 +585,7 @@ async function openConfig() {
       </div>
 
       <div class="crr-section">
-        <div class="crr-sec-title"><i class="fa-solid fa-sliders"></i> <span>上下文设置</span>
-          <div class="menu_button crr-btn crr-cache-clear crr-right">清空缓存</div>
-        </div>
+        <div class="crr-sec-title"><i class="fa-solid fa-sliders"></i> <span>上下文设置</span></div>
         <div class="crr-grid">
           <label class="crr-lbl">思维链分隔符</label>
           <input type="text" class="crr-cot text_pole" placeholder="&lt;/think&gt;" />
@@ -597,8 +600,11 @@ async function openConfig() {
           <div class="crr-hint crr-grid-hint">把 GM 回复里 <code>&lt;标签&gt;…&lt;/标签&gt;</code> 整段删除（逗号分隔多个，可留空）。</div>
 
           <label class="crr-lbl">结果缓存条数</label>
-          <input type="number" class="crr-cache text_pole" min="0" max="100" title="0=关闭" />
-          <div class="crr-hint crr-grid-hint">请求提示词逐字节相同（重生成 / swipe / 回退同输入）时复用旧结果、不再调用 flash（0=关闭）。</div>
+          <div class="crr-inline">
+            <input type="number" class="crr-cache text_pole" min="0" max="100" title="0=关闭" />
+            <div class="menu_button crr-btn crr-cache-clear"><i class="fa-solid fa-trash-can"></i> 清除缓存</div>
+          </div>
+          <div class="crr-hint crr-grid-hint">请求提示词逐字节相同（重生成 / swipe / 回退同输入）时复用旧结果、不再调用 flash（0=关闭）。点「清除缓存」立即丢弃当前缓存。</div>
         </div>
       </div>
 
@@ -830,7 +836,7 @@ function start() {
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.1 已加载 ✓');
+  console.log('[规则路由] v0.9.2 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
