@@ -1,5 +1,5 @@
 {
-  "display_name": "修仙规则路由（验证版）",
+  "display_name": "规则路由 · Rule Router",
   "loading_order": 1000,
   "requires": [],
   "optional": ["EjsTemplate"],

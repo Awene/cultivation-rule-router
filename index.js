@@ -1,4 +1,4 @@
-// 修仙规则路由 · Cultivation Rule Router (v0.9.6)
+// 规则路由 · Cultivation Rule Router (v0.9.6)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -684,7 +684,7 @@ async function openConfig() {
   const root = el(`
     <div class="crr-config">
       <div class="crr-head">
-        <span>修仙规则路由 · 配置</span>
+        <span>规则路由 · 配置</span>
         <div class="crr-inline crr-right">
           <div class="menu_button crr-icon crr-import" title="导入配置"><i class="fa-solid fa-file-import"></i></div>
           <div class="menu_button crr-icon crr-export" title="导出配置（不含 API Key）"><i class="fa-solid fa-file-export"></i></div>
@@ -956,7 +956,7 @@ function addWandMenuItem() {
   if (!menu || menu.querySelector('#crr_wand')) return;
   const item = el(`
     <div id="crr_wand_container" class="extension_container interactable" tabindex="0">
-      <div id="crr_wand" class="list-group-item flex-container flexGap5 interactable" title="修仙规则路由配置" tabindex="0">
+      <div id="crr_wand" class="list-group-item flex-container flexGap5 interactable" title="规则路由配置" tabindex="0">
         <i class="fa-solid fa-route"></i>
         <span>规则路由配置</span>
       </div>
