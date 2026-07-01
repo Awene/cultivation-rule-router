@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.9.6)
+// 规则路由 · Cultivation Rule Router (v0.9.7)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -262,6 +262,18 @@ async function callFlashRouter(candidates) {
   return new Set(keepArr);
 }
 
+/**
+ * 把本回合"激活的规则条目名"写入 chat 变量，供角色卡 COT 用 EJS `getvar('路由激活规则')` 条件拼装。
+ * - 传数组 → 写 JSON（如 ["[战斗规则]","[突破规则]"]）；
+ * - 传 null（未路由/未配置/失败）→ 写 'ALL'，卡侧据此显示全部（没装本插件时同样为默认全部）。
+ */
+function setActiveRulesVar(activeNames) {
+  const cm = ctx.chatMetadata;
+  if (!cm) return;
+  cm.variables = cm.variables || {};
+  cm.variables['路由激活规则'] = activeNames ? JSON.stringify(activeNames) : 'ALL';
+}
+
 // ============ 运行时 ============
 // 事件参数：(type, options, dryRun)。
 // dryRun=令牌重算/提示词预览（如删楼、改楼后其它扩展的后台重算）；quiet=后台生成（总结等）；impersonate=替玩家代写。
@@ -271,11 +283,11 @@ async function onBeforeGeneration(type, _options, dryRun) {
   hideSet = new Set();
   pendingRoute = null;
   const s = settings();
-  if (!s.enabled) return; // 总开关关闭 → 不路由
-  if (!s.api.url || !s.api.key || !s.api.model) return;
+  if (!s.enabled) return setActiveRulesVar(null); // 总开关关闭 → 不路由（卡侧显示全部）
+  if (!s.api.url || !s.api.key || !s.api.model) return setActiveRulesVar(null);
 
   const { candidates, byBook } = await gatherCandidates();
-  if (!candidates.length) return;
+  if (!candidates.length) return setActiveRulesVar(null);
   const nameOf = (book, uid) => (byBook[book] || []).find((e) => String(e.uid) === String(uid))?.comment || `#${uid}`;
 
   const t0 = toast().info('正在判断世界书条目开关', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
@@ -331,6 +343,8 @@ async function onBeforeGeneration(type, _options, dryRun) {
     // 记录本次路由，稍后挂到即将收到的 AI 楼层
     const statLine = `候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
     pendingRoute = { statLine, kept: keptNames, linked: linkedNames, hidden: hiddenNames, cached: lastRouteCached, hash: lastRouteHash };
+    // 写入激活规则清单（命中 + 关联），供角色卡 COT 条件拼装
+    setActiveRulesVar([...keptNames, ...linkedNames]);
     clearToast(t0);
     const stats = `[规则路由] ${statLine}`;
     const msg = lastRouteCached ? `世界书开关使用缓存结果：${stats}（缓存命中）` : stats;
@@ -341,6 +355,7 @@ async function onBeforeGeneration(type, _options, dryRun) {
     toast().warning('路由失败，本回合规则照常', '🧭 规则路由', { timeOut: 4000 });
     console.warn('[规则路由] flash 路由失败，本回合不隐藏任何条目:', e);
     hideSet = new Set();
+    setActiveRulesVar(null); // 失败 → 卡侧显示全部
   }
 }
 
@@ -980,7 +995,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.6 已加载 ✓');
+  console.log('[规则路由] v0.9.7 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
