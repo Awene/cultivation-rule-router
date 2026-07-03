@@ -6,6 +6,22 @@
   max-width: 1040px;
   margin: 0 auto;
   width: 100%;
+  /* 面板自身限高并内部滚动：内容比弹窗/屏幕高时(手机常见)也不会把顶部顶出可视区。
+     否则 ST 弹窗居中 + 内容超高会导致上半部分溢出屏幕外且无法向上滚动。 */
+  max-height: 80vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+/* 窄屏(手机)：整个面板作为单一滚动区，避免与内部列表的嵌套滚动打架、也避免撑高 */
+@media (max-width: 600px) {
+  .crr-config {
+    max-height: 88vh;
+    gap: 10px;
+  }
+  .crr-flex1 {
+    flex: 0 0 auto; /* 不强制撑高，改由整体面板滚动 */
+  }
 }
 .crr-head {
   font-size: 1.15em;

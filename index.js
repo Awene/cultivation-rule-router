@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.11.1)
+// 规则路由 · Cultivation Rule Router (v0.11.2)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -1128,7 +1128,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.11.1 已加载 ✓');
+  console.log('[规则路由] v0.11.2 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
