@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.9.9)
+// 规则路由 · Cultivation Rule Router (v0.11.1)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -57,6 +57,8 @@ function settings() {
   if (typeof s.historyCount !== 'number') s.historyCount = 4; // 收录最近 N 条 GM 回复
   if (typeof s.stripTags !== 'string') s.stripTags = DEFAULT_STRIP_TAGS; // 标签剔除（逗号分隔的标签名）
   if (typeof s.cacheSize !== 'number') s.cacheSize = 5; // flash 结果缓存条数（0=关闭）
+  if (typeof s.manualMode !== 'boolean') s.manualMode = false; // 手动预览模式：跳过 flash，用手动名单
+  if (!Array.isArray(s.manualHidden)) s.manualHidden = []; // 手动隐藏名单：["book::uid", ...]
   return s;
 }
 function toast() {
@@ -74,13 +76,15 @@ function clearToast(t) {
 function persist() {
   ctx.saveSettingsDebounced();
 }
-function getFilter(book, uid) {
-  return settings().filters[book]?.[String(uid)] || null;
+// 过滤配置按「条目名称(comment)」存储，而非 uid：tavern_sync push 会重新生成 uid，
+// 按名称存可跨 push / 跨导入稳定复用。运行时再由名称解析回当次的 live uid。
+function getFilter(book, name) {
+  return settings().filters[book]?.[String(name)] || null;
 }
-function setFilter(book, uid, data) {
+function setFilter(book, name, data) {
   const f = settings().filters;
   f[book] = f[book] || {};
-  f[book][String(uid)] = data;
+  f[book][String(name)] = data;
 }
 /** 被某个「已启用源」关联的条目 uid 集合（这些条目变为被动，不能独立开启） */
 function targetUidsOf(book) {
@@ -91,14 +95,45 @@ function targetUidsOf(book) {
   }
   return t;
 }
-/** 关联了某被动条目的源条目名（用于 UI 显示「由 X 关联」） */
-function sourceNamesForTarget(book, targetUid) {
+/** 关联了某被动条目的源条目名（用于 UI 显示「由 X 关联」）。linked 存的是名称。 */
+function sourceNamesForTarget(book, targetName) {
   const f = settings().filters[book] || {};
   const names = [];
   for (const cfg of Object.values(f)) {
-    if (cfg.enabled && (cfg.linked || []).map(String).includes(String(targetUid))) names.push(cfg.comment || '条目');
+    if (cfg.enabled && (cfg.linked || []).includes(targetName)) names.push(cfg.comment || '条目');
   }
   return names;
+}
+
+/**
+ * 一次性迁移：把过滤配置的存储键从旧的 uid 改为条目名称(comment)，linked 同样 uid→名称。
+ * 兼容 tavern_sync push 后 uid 重新生成、导致旧配置对不上的历史数据。
+ * 幂等：已是名称键的书跳过；可反复调用。需要 byBook 以把 linked 里的旧 uid 解析成名称。
+ */
+function migrateFiltersToNames(byBook) {
+  const s = settings();
+  const isNumeric = (k) => /^\d+$/.test(String(k));
+  let changed = false;
+  for (const [book, map] of Object.entries(s.filters || {})) {
+    if (!map || !Object.keys(map).some(isNumeric)) continue; // 无数字键 → 已是名称键
+    const uidToName = new Map((byBook[book] || []).map((e) => [String(e.uid), e.comment]));
+    const next = {};
+    for (const [key, cfg] of Object.entries(map)) {
+      // 源条目名：优先用配置里存的 comment（对 stale uid 也有效），否则用 live uid 反查，再否则键本身
+      const name = cfg.comment || (isNumeric(key) ? uidToName.get(String(key)) : key);
+      if (!name) continue; // 无从得知名称（坏配置）→ 丢弃
+      // linked：旧 uid → 名称；已是名称的保留；解析不到的（stale）丢弃
+      const linked = [...new Set((cfg.linked || []).map((l) => (isNumeric(l) ? uidToName.get(String(l)) : l)).filter(Boolean))];
+      next[name] = { ...cfg, comment: name, linked };
+    }
+    s.filters[book] = next;
+    changed = true;
+  }
+  if (changed) {
+    s.manualHidden = []; // 手动名单是按 book::name 存的临时态，键格式变了 → 清空
+    persist();
+    console.log('[规则路由] 已把过滤配置迁移为按条目名称存储');
+  }
 }
 
 // ============ 读取"使用中的世界书"条目 ============
@@ -182,13 +217,17 @@ function routerContext() {
 /** 收集"已开启文字过滤且当前在用"的候选条目；返回候选 + 全量 byBook（供解析关联名） */
 async function gatherCandidates() {
   const byBook = await inUseEntriesByBook();
+  migrateFiltersToNames(byBook); // 旧 uid 键配置 → 名称键（幂等）
   const candidates = [];
   for (const [book, entries] of Object.entries(byBook)) {
+    const nameToUid = new Map(entries.map((e) => [e.comment, e.uid])); // 名称 → 本次 live uid
     for (const e of entries) {
-      const f = getFilter(book, e.uid);
+      const f = getFilter(book, e.comment);
       // 任何"启用+有条件"的条目都是候选（即便同时被别人关联，也可自主判定）
       if (f?.enabled && f.condition?.trim()) {
-        candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim(), linked: f.linked || [] });
+        // linked 存的是名称 → 解析成本次 live uid（供 hideSet/onEntriesLoaded 按 uid 匹配）；解析不到的忽略
+        const linked = (f.linked || []).map((nm) => nameToUid.get(nm)).filter((u) => u !== undefined);
+        candidates.push({ book, uid: e.uid, comment: e.comment || `(uid ${e.uid})`, condition: f.condition.trim(), linked });
       }
     }
   }
@@ -283,79 +322,113 @@ function setRouteVars(kept, linked, hidden) {
 }
 
 // ============ 运行时 ============
+/**
+ * 给定应"启用"的候选下标集合 keep（1-based），计算命中/关联/隐藏，写入 hideSet + 路由变量 + 本层记录。
+ * flash 路由与手动预览共用这段下游逻辑（关联触发、被动隐藏、统计完全一致）。
+ * meta: { cached?, hash?, manual? } 仅用于本层记录标注来源。
+ */
+function applyRouting(keep, candidates, byBook, meta) {
+  const nameOf = (book, uid) => (byBook[book] || []).find((e) => String(e.uid) === String(uid))?.comment || `#${uid}`;
+  const onUids = new Set();
+  const keptNames = [];
+  const linkedNames = [];
+  // 命中的条目
+  candidates.forEach((c, i) => {
+    if (keep.has(i + 1)) {
+      onUids.add(`${c.book}::${c.uid}`);
+      keptNames.push(c.comment);
+    }
+  });
+  // 关联触发：命中条目强制拉起其 linked 条目
+  candidates.forEach((c, i) => {
+    if (!keep.has(i + 1)) return;
+    for (const luid of c.linked || []) {
+      const key = `${c.book}::${luid}`;
+      if (!onUids.has(key)) {
+        onUids.add(key);
+        linkedNames.push(nameOf(c.book, luid));
+      }
+    }
+  });
+  // 被动（被关联）条目默认隐藏，仅被命中源拉起时才保留
+  const targetKeys = new Set();
+  const targetInfo = new Map(); // key -> {book, uid}
+  candidates.forEach((c) =>
+    (c.linked || []).forEach((luid) => {
+      const key = `${c.book}::${luid}`;
+      targetKeys.add(key);
+      targetInfo.set(key, { book: c.book, uid: luid });
+    }),
+  );
+  // hideSet = (候选 ∪ 被动条目) 中最终不保留的
+  const hiddenNames = [];
+  candidates.forEach((c) => {
+    const key = `${c.book}::${c.uid}`;
+    if (!onUids.has(key) && !hideSet.has(key)) {
+      hideSet.add(key);
+      hiddenNames.push(c.comment);
+    }
+  });
+  targetKeys.forEach((key) => {
+    // 条目可能同时是候选与被关联目标，已计入则跳过（避免重复计数/重复名）
+    if (!onUids.has(key) && !hideSet.has(key)) {
+      hideSet.add(key);
+      const info = targetInfo.get(key);
+      hiddenNames.push(nameOf(info.book, info.uid));
+    }
+  });
+  const statLine = `候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
+  // 记录本次路由，稍后挂到即将收到的 AI 楼层
+  pendingRoute = { statLine, kept: keptNames, linked: linkedNames, hidden: hiddenNames, cached: !!meta?.cached, hash: meta?.hash || '', manual: !!meta?.manual };
+  // 写入路由结果（命中/关联/隐藏），供角色卡 COT 条件拼装
+  setRouteVars(keptNames, linkedNames, hiddenNames);
+  return { statLine, keptNames, linkedNames, hiddenNames };
+}
+
 // 事件参数：(type, options, dryRun)。
 // dryRun=令牌重算/提示词预览（如删楼、改楼后其它扩展的后台重算）；quiet=后台生成（总结等）；impersonate=替玩家代写。
 // 这些都不是"玩家推进正文"，不应路由，也不应改动 hideSet（以免打断正在进行的真实生成）。
+// 注意：酒馆助手「提示词查看器」刷新时发的是非 dryRun 的 normal 生成，故此处照常运行——查看器即可显示"路由后"的提示词。
 async function onBeforeGeneration(type, _options, dryRun) {
   if (dryRun || type === 'quiet' || type === 'impersonate') return;
   hideSet = new Set();
   pendingRoute = null;
   const s = settings();
   if (!s.enabled) return setRouteVars([], [], []); // 总开关关闭 → 不路由（无隐藏 → 卡侧显示全部）
-  if (!s.api.url || !s.api.key || !s.api.model) return setRouteVars([], [], []);
 
   const { candidates, byBook } = await gatherCandidates();
   if (!candidates.length) return setRouteVars([], [], []);
-  const nameOf = (book, uid) => (byBook[book] || []).find((e) => String(e.uid) === String(uid))?.comment || `#${uid}`;
+
+  // —— 手动预览模式：跳过 flash，所见即所得（勾选=激活，未勾选=隐藏；无视关联，不需要 API）——
+  // manualHidden 存的是"未勾选(隐藏)"的 book::名称。配合「提示词查看器」刷新即可预览该状态下的最终提示词。
+  if (s.manualMode) {
+    const hiddenKeys = new Set(s.manualHidden || []);
+    const keptNames = [];
+    const hiddenNames = [];
+    candidates.forEach((c) => {
+      if (hiddenKeys.has(`${c.book}::${c.comment}`)) {
+        hideSet.add(`${c.book}::${c.uid}`); // 未勾选 → 本次扫描隐藏该条目
+        hiddenNames.push(c.comment);
+      } else {
+        keptNames.push(c.comment); // 勾选 → 激活（无视关联，不拉起任何被动条目）
+      }
+    });
+    const statLine = `候选 ${candidates.length}，激活 ${keptNames.length}，隐藏 ${hiddenNames.length}（手动·无视关联）`;
+    pendingRoute = { statLine, kept: keptNames, linked: [], hidden: hiddenNames, cached: false, hash: '', manual: true };
+    setRouteVars(keptNames, [], hiddenNames);
+    toast().success(`手动预览：${statLine}（到提示词查看器点刷新查看）`, '🔧 规则路由·手动模式', { timeOut: 4000 });
+    console.log(`[规则路由·手动] ${statLine}`);
+    return;
+  }
+
+  if (!s.api.url || !s.api.key || !s.api.model) return setRouteVars([], [], []);
 
   const t0 = toast().info('正在判断世界书条目开关', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
   try {
     const keep = await callFlashRouter(candidates);
-    const onUids = new Set();
-    const keptNames = [];
-    const linkedNames = [];
-    // flash 命中的条目
-    candidates.forEach((c, i) => {
-      if (keep.has(i + 1)) {
-        onUids.add(`${c.book}::${c.uid}`);
-        keptNames.push(c.comment);
-      }
-    });
-    // 关联触发：命中条目强制拉起其 linked 条目
-    candidates.forEach((c, i) => {
-      if (!keep.has(i + 1)) return;
-      for (const luid of c.linked || []) {
-        const key = `${c.book}::${luid}`;
-        if (!onUids.has(key)) {
-          onUids.add(key);
-          linkedNames.push(nameOf(c.book, luid));
-        }
-      }
-    });
-    // 被动（被关联）条目默认隐藏，仅被命中源拉起时才保留
-    const targetKeys = new Set();
-    const targetInfo = new Map(); // key -> {book, uid}
-    candidates.forEach((c) =>
-      (c.linked || []).forEach((luid) => {
-        const key = `${c.book}::${luid}`;
-        targetKeys.add(key);
-        targetInfo.set(key, { book: c.book, uid: luid });
-      }),
-    );
-    // hideSet = (候选 ∪ 被动条目) 中最终不保留的
-    const hiddenNames = [];
-    candidates.forEach((c) => {
-      const key = `${c.book}::${c.uid}`;
-      if (!onUids.has(key) && !hideSet.has(key)) {
-        hideSet.add(key);
-        hiddenNames.push(c.comment);
-      }
-    });
-    targetKeys.forEach((key) => {
-      // 条目可能同时是候选与被关联目标，已计入则跳过（避免重复计数/重复名）
-      if (!onUids.has(key) && !hideSet.has(key)) {
-        hideSet.add(key);
-        const info = targetInfo.get(key);
-        hiddenNames.push(nameOf(info.book, info.uid));
-      }
-    });
-    // 记录本次路由，稍后挂到即将收到的 AI 楼层
-    const statLine = `候选 ${candidates.length}，命中 ${keptNames.length}，关联 ${linkedNames.length}，隐藏 ${hideSet.size}`;
-    pendingRoute = { statLine, kept: keptNames, linked: linkedNames, hidden: hiddenNames, cached: lastRouteCached, hash: lastRouteHash };
-    // 写入路由结果（命中/关联/隐藏），供角色卡 COT 条件拼装
-    setRouteVars(keptNames, linkedNames, hiddenNames);
+    const r = applyRouting(keep, candidates, byBook, { cached: lastRouteCached, hash: lastRouteHash });
     clearToast(t0);
-    const stats = `[规则路由] ${statLine}`;
+    const stats = `[规则路由] ${r.statLine}`;
     const msg = lastRouteCached ? `世界书开关使用缓存结果：${stats}（缓存命中）` : stats;
     toast().success(msg, '🧭 规则路由', { timeOut: 4500 });
     console.log(lastRouteCached ? `${msg}` : stats);
@@ -428,25 +501,24 @@ function pickJsonFile() {
 
 let lastByBook = {};
 
-/** 渲染某条目的关联芯片（可点 × 移除） */
-function renderLinkChips(span, book, uid) {
+/** 渲染某条目的关联芯片（可点 × 移除）。linked 存的是条目名称。 */
+function renderLinkChips(span, book, name) {
   span.innerHTML = '';
-  const linked = getFilter(book, uid)?.linked || [];
+  const linked = getFilter(book, name)?.linked || [];
   if (!linked.length) {
     span.append(el('<span class="crr-hint">（无）</span>'));
     return;
   }
-  for (const luid of linked) {
-    const name = (lastByBook[book] || []).find((x) => String(x.uid) === String(luid))?.comment || `#${luid}`;
+  for (const lname of linked) {
     const chip = el('<span class="crr-chip"></span>');
-    chip.append(document.createTextNode(name));
+    chip.append(document.createTextNode(lname));
     const x = el('<i class="fa-solid fa-xmark crr-chip-x" title="移除关联"></i>');
     x.addEventListener('click', () => {
-      const f = getFilter(book, uid) || {};
-      f.linked = (f.linked || []).filter((u) => String(u) !== String(luid));
-      setFilter(book, uid, f);
+      const f = getFilter(book, name) || {};
+      f.linked = (f.linked || []).filter((u) => String(u) !== String(lname));
+      setFilter(book, name, f);
       persist();
-      renderLinkChips(span, book, uid);
+      renderLinkChips(span, book, name);
     });
     chip.append(x);
     span.append(chip);
@@ -454,11 +526,11 @@ function renderLinkChips(span, book, uid) {
 }
 
 /** 关联选择器：带搜索的勾选列表（同一世界书其他条目），返回是否有改动 */
-async function openLinkPicker(book, srcUid, srcComment) {
+async function openLinkPicker(book, srcName, srcComment) {
   const entries = (lastByBook[book] || [])
-    .filter((e) => String(e.uid) !== String(srcUid))
+    .filter((e) => e.comment !== srcName)
     .sort((a, b) => (a.comment || '').localeCompare(b.comment || '', 'zh')); // 按名称排序，[ 开头的聚在一起
-  const cur = new Set((getFilter(book, srcUid)?.linked || []).map(String));
+  const cur = new Set((getFilter(book, srcName)?.linked || []).map(String)); // linked 存的是名称
   const dlg = el(`
     <div class="crr-link-dlg">
       <div class="crr-head">关联触发条目</div>
@@ -476,11 +548,11 @@ async function openLinkPicker(book, srcUid, srcComment) {
       .forEach((e) => {
         const r = el('<label class="crr-exp-row"><input type="checkbox" class="crr-link-chk" /> <span></span></label>');
         const c = r.querySelector('input');
-        c.dataset.uid = String(e.uid);
-        c.checked = cur.has(String(e.uid));
+        c.dataset.name = String(e.comment);
+        c.checked = cur.has(String(e.comment));
         c.addEventListener('change', () => {
-          if (c.checked) cur.add(String(e.uid));
-          else cur.delete(String(e.uid));
+          if (c.checked) cur.add(String(e.comment));
+          else cur.delete(String(e.comment));
         });
         r.querySelector('span').textContent = e.comment || `#${e.uid}`;
         listEl.append(r);
@@ -490,9 +562,9 @@ async function openLinkPicker(book, srcUid, srcComment) {
   render();
   const ok = await ctx.callGenericPopup(dlg, ctx.POPUP_TYPE.CONFIRM, '', { okButton: '确定', cancelButton: '取消', wide: true, large: true });
   if (!ok) return false;
-  const f = getFilter(book, srcUid) || { enabled: true, condition: '', comment: srcComment };
+  const f = getFilter(book, srcName) || { enabled: true, condition: '', comment: srcComment };
   f.linked = [...cur];
-  setFilter(book, srcUid, f);
+  setFilter(book, srcName, f);
   persist();
   return true;
 }
@@ -512,7 +584,7 @@ function renderFilterList(container, query = '') {
       .filter((e) => !q || (e.comment || '').toLowerCase().includes(q))
       .sort((a, b) => (a.comment || '').localeCompare(b.comment || '', 'zh')); // 按名称排序
     if (!entries.length) continue;
-    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.uid)?.enabled).length;
+    const enabledCount = lastByBook[book].filter((e) => getFilter(book, e.comment)?.enabled).length;
     const group = el(
       `<div class="crr-book"><div class="crr-book-title">📖 ${escapeHtml(book)} <span class="crr-count">${entries.length}/${lastByBook[book].length} · 已过滤 ${enabledCount}</span></div></div>`,
     );
@@ -520,9 +592,9 @@ function renderFilterList(container, query = '') {
       shown++;
       const name = escapeHtml(e.comment || '(无标题 uid ' + e.uid + ')');
       const lamp = e.constant ? '蓝·常驻' : e.disable ? '关' : '绿·关键词';
-      const linkedBy = sourceNamesForTarget(book, e.uid); // 被哪些启用源关联（仅信息提示；条目仍可自设条件独立触发）
+      const linkedBy = sourceNamesForTarget(book, e.comment); // 被哪些启用源关联（仅信息提示；条目仍可自设条件独立触发）
 
-      const f = getFilter(book, e.uid);
+      const f = getFilter(book, e.comment);
       const on = !!f?.enabled;
       const row = el(`
         <div class="crr-entry${on ? ' crr-on' : ''}">
@@ -544,8 +616,8 @@ function renderFilterList(container, query = '') {
       const chipsEl = row.querySelector('.crr-link-chips');
       cond.value = f?.condition || '';
       const save = () => {
-        const prev = getFilter(book, e.uid) || {};
-        setFilter(book, e.uid, { enabled: chk.checked, condition: cond.value, comment: e.comment, linked: prev.linked || [] });
+        const prev = getFilter(book, e.comment) || {};
+        setFilter(book, e.comment, { enabled: chk.checked, condition: cond.value, comment: e.comment, linked: prev.linked || [] });
         persist();
       };
       chk.addEventListener('change', () => {
@@ -553,9 +625,9 @@ function renderFilterList(container, query = '') {
         rerender(); // 启停可能改变其它条目的被动状态
       });
       cond.addEventListener('input', save);
-      renderLinkChips(chipsEl, book, e.uid);
+      renderLinkChips(chipsEl, book, e.comment);
       row.querySelector('.crr-link-add').addEventListener('click', async () => {
-        if (await openLinkPicker(book, e.uid, e.comment)) rerender(); // 关联变化 → 整表重渲染（被动状态更新）
+        if (await openLinkPicker(book, e.comment, e.comment)) rerender(); // 关联变化 → 整表重渲染（被动状态更新）
       });
       group.append(row);
     }
@@ -567,6 +639,7 @@ function renderFilterList(container, query = '') {
 async function refreshList(container, searchInput) {
   container.innerHTML = '<div class="crr-hint">读取使用中的世界书…</div>';
   lastByBook = await inUseEntriesByBook();
+  migrateFiltersToNames(lastByBook); // 旧 uid 键配置 → 名称键（幂等）
   renderFilterList(container, searchInput?.value || '');
 }
 
@@ -610,7 +683,7 @@ function fmtRecord(r) {
     line('命中开启', r.kept),
     line('关联开启', r.linked),
     line('隐藏', r.hidden),
-    `本次来源：${r.cached ? '缓存复用（未调用 flash）' : 'flash 实时判定'}`,
+    `本次来源：${r.manual ? '手动预览（未调用 flash）' : r.cached ? '缓存复用（未调用 flash）' : 'flash 实时判定'}`,
   ].join('\n');
 }
 
@@ -692,6 +765,21 @@ async function openConfig() {
             <input type="checkbox" class="crr-enabled" /> 启用插件
           </label>
         </div>
+      </div>
+
+      <div class="crr-section crr-manual-sec">
+        <div class="crr-sec-title"><i class="fa-solid fa-flask-vial"></i> <span>手动预览模式</span>
+          <label class="crr-master crr-right" title="开启后跳过 flash，用下方名单强制隐藏，供提示词查看器预览">
+            <input type="checkbox" class="crr-manual-toggle" /> 启用手动
+          </label>
+        </div>
+        <div class="crr-hint">开启后<b>跳过 flash</b>：下方<b>打勾=激活，不勾=隐藏</b>（所见即所得，<b>无视关联触发</b>）。被隐藏的条目写入 <code>路由隐藏规则</code>。到酒馆助手「提示词查看器」点刷新 <i class="fa-solid fa-rotate-right"></i> 即可看到该状态下的最终提示词。<b>用完请手动关闭</b>（此模式持久生效，会一直跳过 flash）。</div>
+        <div class="crr-inline">
+          <div class="menu_button crr-btn crr-manual-none" title="全部勾选=全部激活">全部激活</div>
+          <div class="menu_button crr-btn crr-manual-all" title="全部取消=全部隐藏">全部隐藏</div>
+          <div class="menu_button crr-btn crr-manual-refresh"><i class="fa-solid fa-arrows-rotate"></i> 刷新名单</div>
+        </div>
+        <div class="crr-manual-list"></div>
       </div>
 
       <div class="crr-section">
@@ -777,6 +865,66 @@ async function openConfig() {
     root.classList.toggle('crr-disabled', !s.enabled);
   });
   root.classList.toggle('crr-disabled', !s.enabled);
+
+  // —— 手动预览模式 ——
+  const manualToggle = root.querySelector('.crr-manual-toggle');
+  const manualList = root.querySelector('.crr-manual-list');
+  manualToggle.checked = s.manualMode;
+  root.classList.toggle('crr-manual-on', s.manualMode);
+  manualToggle.addEventListener('change', () => {
+    s.manualMode = manualToggle.checked;
+    persist();
+    root.classList.toggle('crr-manual-on', s.manualMode);
+  });
+  async function renderManualList() {
+    manualList.innerHTML = '<div class="crr-hint">读取候选条目…</div>';
+    const { candidates } = await gatherCandidates();
+    // 清理已失效的隐藏键（条目/条件被删后不再是候选）
+    const validKeys = new Set(candidates.map((c) => `${c.book}::${c.comment}`));
+    const cleaned = (s.manualHidden || []).filter((k) => validKeys.has(k));
+    if (cleaned.length !== (s.manualHidden || []).length) {
+      s.manualHidden = cleaned;
+      persist();
+    }
+    const hidden = new Set(cleaned);
+    manualList.innerHTML = '';
+    if (!candidates.length) {
+      manualList.innerHTML = '<div class="crr-hint">没有已配置文字过滤的候选条目。请先在下方「规则过滤」里给条目开启过滤并填写启用条件。</div>';
+      return;
+    }
+    candidates
+      .slice()
+      .sort((a, b) => (a.book || '').localeCompare(b.book || '', 'zh') || (a.comment || '').localeCompare(b.comment || '', 'zh'))
+      .forEach((c) => {
+        const key = `${c.book}::${c.comment}`;
+        const row = el('<label class="crr-exp-row crr-manual-row"><input type="checkbox" class="crr-manual-chk" /> <span class="crr-manual-name"></span> <span class="crr-manual-book crr-hint"></span></label>');
+        const chk = row.querySelector('input');
+        chk.checked = !hidden.has(key); // 勾选=激活；未勾选=隐藏（在 manualHidden 里）
+        chk.addEventListener('change', () => {
+          const set = new Set(s.manualHidden || []);
+          if (chk.checked) set.delete(key); // 勾上=激活 → 移出隐藏名单
+          else set.add(key); // 取消=隐藏 → 加入隐藏名单
+          s.manualHidden = [...set];
+          persist();
+        });
+        row.querySelector('.crr-manual-name').textContent = c.comment;
+        row.querySelector('.crr-manual-book').textContent = c.book;
+        manualList.append(row);
+      });
+  }
+  root.querySelector('.crr-manual-refresh').addEventListener('click', renderManualList);
+  root.querySelector('.crr-manual-all').addEventListener('click', async () => {
+    const { candidates } = await gatherCandidates();
+    s.manualHidden = candidates.map((c) => `${c.book}::${c.comment}`);
+    persist();
+    renderManualList();
+  });
+  root.querySelector('.crr-manual-none').addEventListener('click', () => {
+    s.manualHidden = [];
+    persist();
+    renderManualList();
+  });
+  renderManualList();
 
   cotIn.value = s.cotSeparator;
   histIn.value = s.historyCount;
@@ -980,7 +1128,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.9.9 已加载 ✓');
+  console.log('[规则路由] v0.11.1 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {

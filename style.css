@@ -269,6 +269,41 @@
   font-size: 0.82em;
   padding: 0 9px;
 }
+/* 手动预览模式 */
+.crr-manual-sec {
+  border-color: var(--SmartThemeQuoteColor, #6b8afd);
+}
+.crr-config.crr-manual-on .crr-manual-sec {
+  background: rgba(107, 138, 253, 0.08);
+  box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor, #6b8afd) inset;
+}
+.crr-manual-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 26vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.crr-manual-row {
+  padding: 3px 4px;
+  border-radius: 5px;
+}
+.crr-manual-row:hover {
+  background: var(--black30a, rgba(0, 0, 0, 0.2));
+}
+.crr-manual-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crr-manual-book {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding-left: 8px;
+}
+
 /* 逐层路由面板 */
 .crr-floor-panel {
   text-align: left;
