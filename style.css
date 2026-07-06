@@ -19,9 +19,6 @@
     max-height: 88vh;
     gap: 10px;
   }
-  .crr-flex1 {
-    flex: 0 0 auto; /* 不强制撑高，改由整体面板滚动 */
-  }
 }
 .crr-head {
   font-size: 1.15em;
@@ -55,7 +52,9 @@
   gap: 8px;
 }
 .crr-flex1 {
-  flex: 1;
+  /* 不用 flex:1 撑满：在 .crr-config 限高后，撑满会让本区在其它区占满时被压成 0 高、
+     导致规则列表看不见。改为自然高度(由内部 .crr-list 的 max-height 限高)，整体面板滚动。 */
+  flex: 0 0 auto;
   min-height: 0;
 }
 .crr-sec-title {
