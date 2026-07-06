@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.11.3)
+// 规则路由 · Cultivation Rule Router (v0.12.0)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -15,8 +15,17 @@ const DEFAULT_PROMPT =
 const DEFAULT_STRIP_TAGS = 'StatusPlaceHolderImpl,disclaimer,UpdateVariable,options';
 
 let ctx = null;
+/** ST 主 script 模块（读其 live 导出 is_send_press，用于区分"玩家推进正文" vs "后台/静默生成如总结"） */
+let scriptMod = null;
 /** 本次生成要隐藏的条目键集合：`${world}::${uid}` */
 let hideSet = new Set();
+
+/** 后台/静默生成判定：总结插件、其它脚本的 generateRaw 等 is_send_press 为 false；
+ *  真正的玩家推进正文（含重生成/swipe/续写、以及提示词查看器的 Generate('normal')）为 true。
+ *  scriptMod 未加载成功时返回 false（回退为"照常路由"，不改变旧行为）。 */
+function isBackgroundGen() {
+  return !!scriptMod && scriptMod.is_send_press === false;
+}
 /** flash 结果缓存（LRU）：请求提示词哈希 -> 启用编号数组。用于重生成/swipe/回退同输入时复用 */
 const routeCache = new Map();
 let lastRouteCached = false;
@@ -147,6 +156,20 @@ async function importGetSortedEntries() {
     }
   }
   console.warn('[规则路由] 无法 import getSortedEntries，回退到角色书');
+  return null;
+}
+
+/** 加载 ST 主 script.js 模块以读取 live 的 is_send_press（区分玩家推进正文 / 后台静默生成） */
+async function importScriptModule() {
+  for (const p of ['/script.js', '../../../script.js']) {
+    try {
+      const m = await import(p);
+      if ('is_send_press' in m) return m;
+    } catch (e) {
+      /* 试下一个路径 */
+    }
+  }
+  console.warn('[规则路由] 无法 import script.js(is_send_press)，将不区分后台生成（总结等仍会被路由）');
   return null;
 }
 
@@ -391,6 +414,10 @@ function applyRouting(keep, candidates, byBook, meta) {
 // 注意：酒馆助手「提示词查看器」刷新时发的是非 dryRun 的 normal 生成，故此处照常运行——查看器即可显示"路由后"的提示词。
 async function onBeforeGeneration(type, _options, dryRun) {
   if (dryRun || type === 'quiet' || type === 'impersonate') return;
+  // 后台/静默生成（总结插件的 generateRaw、其它脚本的后台请求等）不是玩家推进正文：
+  // 它们以 type='normal' 触发本事件，但 is_send_press 为 false。此时不路由、也不动 hideSet，
+  // 避免拦截总结等请求、多花一次 flash、并污染路由变量。（真实玩家回合/查看器为 true，照常路由。）
+  if (isBackgroundGen()) return;
   hideSet = new Set();
   pendingRoute = null;
   const s = settings();
@@ -442,6 +469,8 @@ async function onBeforeGeneration(type, _options, dryRun) {
 }
 
 function onEntriesLoaded(payload) {
+  // 后台/静默生成（总结等）不改动世界书条目：即使残留上一次真实回合的 hideSet 也不应用。
+  if (isBackgroundGen()) return;
   if (!hideSet.size) return;
   let hidden = 0;
   for (const list of [payload?.globalLore, payload?.characterLore, payload?.chatLore, payload?.personaLore]) {
@@ -1117,6 +1146,9 @@ function addWandMenuItem() {
 function start() {
   ctx = SillyTavern.getContext();
   const ET = ctx.eventTypes;
+  importScriptModule().then((m) => {
+    scriptMod = m;
+  }); // 供后台生成判定（is_send_press）
   ctx.eventSource.on(ET.GENERATION_AFTER_COMMANDS, onBeforeGeneration);
   ctx.eventSource.on(ET.WORLDINFO_ENTRIES_LOADED, onEntriesLoaded);
   // 逐层路由记录 + 楼层查看按钮
@@ -1128,7 +1160,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.11.3 已加载 ✓');
+  console.log('[规则路由] v0.12.0 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {
