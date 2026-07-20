@@ -1,4 +1,4 @@
-// 规则路由 · Cultivation Rule Router (v0.12.1)
+// 规则路由 · Cultivation Rule Router (v0.12.3)
 // 玩家在配置 UI 给"使用中的世界书"的某些条目开启【文字过滤】并填写启用条件；
 // 每次生成前用 flash 模型据当前情境判断这些条目是否满足条件，未满足的在本次扫描里隐藏，
 // 满足的交由 ST 原生流程（含 EjsTemplate 的 EJS/宏处理）注入。不改 UI 开关、不落盘、零改卡。
@@ -13,6 +13,7 @@ const DEFAULT_PROMPT =
   '- 只选出条件确实满足的条目编号；拿不准、无明确迹象则不选。\n' +
   '- 严格只输出 JSON：{"启用":[编号,...]}，不要任何解释或多余文本。';
 const DEFAULT_STRIP_TAGS = 'StatusPlaceHolderImpl,disclaimer,UpdateVariable,options';
+const DEFAULT_API_URL = 'https://api.deepseek.com/v1';
 
 let ctx = null;
 /** 本次生成要隐藏的条目键集合：`${world}::${uid}` */
@@ -247,19 +248,116 @@ function buildRouterMessages(candidates, currentInput) {
   return { system, user };
 }
 
+function apiBase(url) {
+  const configured = typeof url === 'string' ? url.trim() : '';
+  return (configured || DEFAULT_API_URL).replace(/\/+$/, '');
+}
+
+function customAuthHeaders(key) {
+  // JSON is valid YAML and avoids allowing special characters in a key to create extra headers.
+  return JSON.stringify({ Authorization: `Bearer ${key}` });
+}
+
+function responseErrorMessage(data) {
+  if (!data?.error) return '';
+  if (data.error === true) return data.message || '上游 API 返回错误';
+  if (typeof data.error === 'string') return data.error;
+  return data.error.message || data.message || JSON.stringify(data.error);
+}
+
+async function postToSillyTavern(path, body, label) {
+  if (typeof ctx?.getRequestHeaders !== 'function') {
+    throw new Error('当前 SillyTavern 版本不支持同源 API 请求，请升级后重试');
+  }
+
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: ctx.getRequestHeaders(),
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`${label}返回了非 JSON 响应（HTTP ${res.status}）`);
+  }
+
+  const remoteError = responseErrorMessage(data);
+  if (!res.ok || remoteError) {
+    throw new Error(`${label}失败（HTTP ${res.status}）${remoteError ? `：${remoteError}` : ''}`);
+  }
+  return data;
+}
+
+function isOpenCodeGo(url) {
+  try {
+    const parsed = new URL(apiBase(url));
+    return parsed.hostname.toLowerCase() === 'opencode.ai' && parsed.pathname.replace(/\/+$/, '') === '/zen/go/v1';
+  } catch {
+    return false;
+  }
+}
+
+function usesAnthropicProtocol(url, model) {
+  // OpenCode Go currently exposes MiniMax and Qwen through /messages; its other models use chat/completions.
+  return isOpenCodeGo(url) && /^(?:minimax-|qwen)/i.test(model);
+}
+
 async function fetchModels(url, key) {
-  const base = url.replace(/\/+$/, '');
-  const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await postToSillyTavern(
+    '/api/backends/chat-completions/status',
+    {
+      chat_completion_source: 'custom',
+      custom_url: apiBase(url),
+      custom_include_headers: customAuthHeaders(key),
+    },
+    '获取模型',
+  );
   return (data?.data || data?.models || []).map((m) => m.id || m.name).filter(Boolean);
+}
+
+async function requestFlashCompletion(url, key, model, messages) {
+  const base = apiBase(url);
+  const common = {
+    model,
+    temperature: 0,
+    max_tokens: 512,
+    stream: false,
+    messages,
+  };
+
+  if (usesAnthropicProtocol(base, model)) {
+    return postToSillyTavern(
+      '/api/backends/chat-completions/generate',
+      {
+        ...common,
+        chat_completion_source: 'claude',
+        reverse_proxy: base,
+        proxy_password: key,
+        use_sysprompt: true,
+      },
+      'flash API',
+    );
+  }
+
+  return postToSillyTavern(
+    '/api/backends/chat-completions/generate',
+    {
+      ...common,
+      chat_completion_source: 'custom',
+      custom_url: base,
+      custom_include_headers: customAuthHeaders(key),
+    },
+    'flash API',
+  );
 }
 
 /** candidates: [{book, uid, comment, condition}] → 返回应"启用"的下标集合(1-based) */
 async function callFlashRouter(candidates) {
   const s = settings();
   const { url, key, model } = s.api;
-  if (!url || !key || !model) throw new Error('flash API 未配置');
+  if (!key || !model) throw new Error('flash API 未配置');
   const { system, user } = buildRouterMessages(candidates, routerContext().current);
   const cacheKey = `${system} ${user}`;
   lastRouteCached = false;
@@ -274,21 +372,10 @@ async function callFlashRouter(candidates) {
     return new Set(cached);
   }
 
-  const base = url.replace(/\/+$/, '');
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await requestFlashCompletion(url, key, model, [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ]);
   const txt = data?.choices?.[0]?.message?.content || '';
   const m = txt.match(/\{[\s\S]*\}/);
   const obj = m ? JSON.parse(m[0]) : { 启用: [] };
@@ -421,7 +508,7 @@ async function onBeforeGeneration(type, _options, dryRun) {
     return;
   }
 
-  if (!s.api.url || !s.api.key || !s.api.model) return setRouteVars([], [], []);
+  if (!s.api.key || !s.api.model) return setRouteVars([], [], []);
 
   const t0 = toast().info('正在判断世界书条目开关', '🧭 规则路由', { timeOut: 0, extendedTimeOut: 0 });
   try {
@@ -1128,7 +1215,7 @@ function start() {
   setTimeout(addFloorButtonsToAll, 1500);
   addWandMenuItem();
   setTimeout(addWandMenuItem, 1500);
-  console.log('[规则路由] v0.12.1 已加载 ✓');
+  console.log('[规则路由] v0.12.3 已加载 ✓');
 }
 
 if (globalThis.SillyTavern?.getContext) {

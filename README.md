@@ -44,7 +44,7 @@ https://github.com/Awene/cultivation-rule-router
 
 魔棒菜单（左下角✨）→「**规则路由配置**」打开配置面板：
 
-- **flash 路由模型**：填副模型的接口地址 / API Key，点「获取模型」选一个模型。建议用便宜快速的小模型（如 deepseek-flash、gemini-flash 等）。
+- **flash 路由模型**：填副模型的接口地址 / API Key，点「获取模型」选一个模型。接口地址留空时默认使用 `https://api.deepseek.com/v1`。建议用便宜快速的小模型（如 deepseek-flash、gemini-flash 等）。
 - **路由提示词**：给副模型的 system 提示词，可编辑 + 「预览」查看副模型实际收到的完整提示词。
 - **上下文设置**：
   - *思维链分隔符*（默认 `</think>`）：分隔符之前的内容视作思维链，不送入副模型。
@@ -56,6 +56,16 @@ https://github.com/Awene/cultivation-rule-router
   - 「**关联**」：让本条目触发时**连带开启**其它条目（如 A→B：A 开则 B 必开）。被关联的条目变为**被动**（不能独立开启、只被关联触发），支持 A→B、C→B 多源。
 - **配置导入 / 导出**（顶部图标）：可分享给别人；**导出绝不含 API Key**，导入保留本地 Key。
 - **总开关**：一键关闭本插件（关闭后所有条目照常）。
+
+### OpenCode Go
+
+接口地址填写：
+
+```
+https://opencode.ai/zen/go/v1
+```
+
+再填入 OpenCode Go API Key 并点「获取模型」。插件会通过 SillyTavern 同源后端请求 API，避免浏览器直连的 CORS 限制；OpenCode Go 中的 MiniMax / Qwen 模型会自动使用 `/messages`，其余模型使用 `/chat/completions`。
 
 ---
 
